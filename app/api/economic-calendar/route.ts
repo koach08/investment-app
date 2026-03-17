@@ -24,6 +24,29 @@ const US_SERIES: Record<string, string> = {
   "米PMI製造業": "MANEMP",
 };
 
+// --- Credit & Financial Stress (early warning signals) ---
+const CREDIT_STRESS_SERIES: Record<string, string> = {
+  "ハイイールド・スプレッド": "BAMLH0A0HYM2",         // ICE BofA US HY OAS — widens before crashes
+  "投資適格スプレッド": "BAMLC0A0CM",                  // ICE BofA US Corporate Master OAS
+  "金融ストレス指数(STL)": "STLFSI2",                  // St. Louis Fed Financial Stress Index (0=normal, +danger)
+  "金融環境指数(CHI)": "NFCI",                         // Chicago Fed NFCI (0=avg, +tight, -loose)
+};
+
+// --- Recession & Leading Indicators ---
+const LEADING_SERIES: Record<string, string> = {
+  "Sahm景気後退指標": "SAHMREALTIME",                  // >0.5 = recession signal
+  "米景気先行指数": "USSLIND",                          // Conference Board LEI proxy
+  "長短金利差(10Y-3M)": "T10Y3M",                      // More reliable recession predictor
+  "銀行貸出態度(C&I)": "DRTSCILM",                     // Net % tightening — tightens before recession
+};
+
+// --- Sentiment & Inflation Expectations ---
+const SENTIMENT_SERIES: Record<string, string> = {
+  "消費者信頼感(ミシガン)": "UMCSENT",                   // University of Michigan Consumer Sentiment
+  "10年ブレークイーブン・インフレ率": "T10YIE",           // Market's inflation expectation
+  "5年ブレークイーブン・インフレ率": "T5YIE",             // Shorter-term inflation expectation
+};
+
 // --- Europe / Global ---
 const GLOBAL_SERIES: Record<string, string> = {
   "ユーロ圏CPI": "CP0000EZ19M086NEST",
@@ -40,6 +63,9 @@ const GLOBAL_SERIES: Record<string, string> = {
 const FRED_SERIES: Record<string, string> = {
   ...JAPAN_SERIES,
   ...US_SERIES,
+  ...CREDIT_STRESS_SERIES,
+  ...LEADING_SERIES,
+  ...SENTIMENT_SERIES,
   ...GLOBAL_SERIES,
 };
 
@@ -130,7 +156,12 @@ export async function GET() {
 
   // Determine region for each series
   const japanIds = new Set(Object.values(JAPAN_SERIES));
-  const usIds = new Set(Object.values(US_SERIES));
+  const usIds = new Set([
+    ...Object.values(US_SERIES),
+    ...Object.values(CREDIT_STRESS_SERIES),
+    ...Object.values(LEADING_SERIES),
+    ...Object.values(SENTIMENT_SERIES),
+  ]);
 
   const data: FredObservation[] = entries.map(([name, seriesId], i) => {
     const region = japanIds.has(seriesId) ? "japan" : usIds.has(seriesId) ? "us" : "global";

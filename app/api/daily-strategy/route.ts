@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { indices, fredData, news, investmentProfile, holdings, earningsTone, fedTone, geopoliticalRisk } = body;
+  const { indices, fredData, news, investmentProfile, holdings, earningsTone, fedTone, geopoliticalRisk, fearGreed, jpxStats } = body;
 
   // Build holdings section
   let holdingsSection = "";
@@ -94,6 +94,49 @@ ${sorted.map((h: HoldingInput) => {
 - 主要イベント: ${geopoliticalRisk.topEvents?.slice(0, 5).map((e: { title: string; tone: number }) => `${e.title} (tone:${e.tone?.toFixed(1)})`).join(" / ") || "N/A"}`;
   }
 
+  // Build Fear & Greed section
+  let fearGreedSection = "";
+  if (fearGreed && fearGreed.score !== undefined) {
+    fearGreedSection = `
+## 市場センチメント（CNN Fear & Greed Index）
+- 現在スコア: ${fearGreed.score}/100 (${fearGreed.rating})
+- 前日: ${fearGreed.previousClose} / 1週間前: ${fearGreed.oneWeekAgo} / 1ヶ月前: ${fearGreed.oneMonthAgo} / 1年前: ${fearGreed.oneYearAgo}
+${fearGreed.components?.map((c: { name: string; score: number; rating: string }) => `- ${c.name}: ${c.score} (${c.rating})`).join("\n") || ""}
+※ 0=極度の恐怖（逆張り買いシグナルの可能性）、100=極度の強欲（危険信号）。ウォーレン・バフェットの格言「他人が恐れている時に貪欲に」を数値化したもの。`;
+  }
+
+  // Build JPX stats section
+  let jpxSection = "";
+  if (jpxStats) {
+    if (jpxStats.shortSellingRatio) {
+      const ss = jpxStats.shortSellingRatio;
+      jpxSection += `
+## JPX空売り比率（${ss.date}）
+- 空売り比率: ${ss.totalRatio}%
+- 判定: ${ss.signal}
+※ 40%超は売り圧力大だが、過度な空売りは踏み上げ（ショートスクイーズ）リスクあり＝底打ちシグナルにもなる`;
+    }
+    if (jpxStats.marginTrading) {
+      const mt = jpxStats.marginTrading;
+      jpxSection += `
+## JPX信用取引残高（${mt.date}）
+- 買い残: ${mt.buyBalance}億円 / 売り残: ${mt.sellBalance}億円
+- 信用倍率: ${mt.ratio}倍
+- 判定: ${mt.signal}
+※ 信用倍率が高い＝将来の売り圧力（利確や追証で強制決済される可能性）。低い＝ショートカバー期待`;
+    }
+    if (jpxStats.investorFlows) {
+      const fl = jpxStats.investorFlows;
+      jpxSection += `
+## 投資部門別売買動向（${fl.date}）
+- 外国人: 買${fl.foreigners.buy} / 売${fl.foreigners.sell} / 差引${fl.foreigners.net > 0 ? "+" : ""}${fl.foreigners.net}
+- 個人: 買${fl.individuals.buy} / 売${fl.individuals.sell} / 差引${fl.individuals.net > 0 ? "+" : ""}${fl.individuals.net}
+- 法人: 買${fl.institutions.buy} / 売${fl.institutions.sell} / 差引${fl.institutions.net > 0 ? "+" : ""}${fl.institutions.net}
+- 判定: ${fl.signal}
+※ 外国人が売り越しで個人が買い越しの場合、個人が「受け手」になっている危険パターン。逆は好機の可能性`;
+    }
+  }
+
   const prompt = `あなたは機関投資家レベルの冷徹なクオンツ・投資ストラテジストである。忖度は一切禁止。全ユーザーに対して厳格にデータドリブンな分析を行え。
 
 ## 分析フレームワーク（Institutional Grade）
@@ -142,12 +185,14 @@ ${holdingsSection}
 ${earningsSection}
 ${fedSection}
 ${geoSection}
+${fearGreedSection}
+${jpxSection}
 
 ## 現在の世界市場データ
 ${JSON.stringify(indices?.slice(0, 20), null, 2)}
 
-## 経済指標
-${JSON.stringify(fredData?.slice(0, 8), null, 2)}
+## 経済指標（FRED: クレジット・金融ストレス・景気先行指標含む）
+${JSON.stringify(fredData?.slice(0, 20), null, 2)}
 
 ## 最新ニュース
 ${JSON.stringify(news?.slice(0, 10), null, 2)}

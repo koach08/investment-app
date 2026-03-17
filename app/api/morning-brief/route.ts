@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { indices, news, fredData, holdings, earningsTone, fedTone, geopoliticalRisk } = body;
+  const { indices, news, fredData, holdings, earningsTone, fedTone, geopoliticalRisk, fearGreed, jpxStats } = body;
 
   let holdingsContext = "";
   if (holdings && holdings.length > 0) {
@@ -44,8 +44,8 @@ ${sorted.map((h: HoldingInput) => {
 ## 世界市場データ
 ${JSON.stringify(indices?.slice(0, 20), null, 2)}
 
-## 経済指標
-${JSON.stringify(fredData?.slice(0, 8), null, 2)}
+## 経済指標（クレジットスプレッド・金融ストレス・景気先行指標含む）
+${JSON.stringify(fredData?.slice(0, 20), null, 2)}
 
 ## 最新ニュース
 ${JSON.stringify(news?.slice(0, 15), null, 2)}
@@ -53,6 +53,10 @@ ${JSON.stringify(news?.slice(0, 15), null, 2)}
 ${earningsTone ? `## 直近の決算トーン: ${JSON.stringify(earningsTone)}` : ""}
 ${fedTone ? `## 中央銀行スタンス: ${JSON.stringify(fedTone)}` : ""}
 ${geopoliticalRisk?.riskScore !== undefined ? `## 地政学リスク（GDELT）: スコア${geopoliticalRisk.riskScore}/100 (${geopoliticalRisk.riskLevel}) / ホットスポット: ${geopoliticalRisk.hotSpots?.slice(0, 3).map((h: { category: string; severity: string }) => `${h.category}(${h.severity})`).join(", ") || "なし"}` : ""}
+${fearGreed?.score !== undefined ? `## 市場センチメント（CNN Fear & Greed Index）: ${fearGreed.score}/100 (${fearGreed.rating}) / 前日:${fearGreed.previousClose} / 1週前:${fearGreed.oneWeekAgo} / 1月前:${fearGreed.oneMonthAgo}。0=極度の恐怖（逆張り買い?）、100=極度の強欲（危険?）` : ""}
+${jpxStats?.shortSellingRatio ? `## JPX空売り比率: ${jpxStats.shortSellingRatio.totalRatio}% (${jpxStats.shortSellingRatio.signal})` : ""}
+${jpxStats?.marginTrading ? `## JPX信用倍率: ${jpxStats.marginTrading.ratio}倍 / 買い残${jpxStats.marginTrading.buyBalance}億 / 売り残${jpxStats.marginTrading.sellBalance}億 (${jpxStats.marginTrading.signal})` : ""}
+${jpxStats?.investorFlows ? `## 投資部門別: 外国人${jpxStats.investorFlows.foreigners.net > 0 ? "買越" : "売越"} / 個人${jpxStats.investorFlows.individuals.net > 0 ? "買越" : "売越"} (${jpxStats.investorFlows.signal})` : ""}
 ${holdingsContext}
 
 ## 回答形式（厳密にこのJSON形式で返せ）

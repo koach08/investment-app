@@ -5,6 +5,7 @@ import { clsx } from "clsx";
 import TickerLink from "@/components/TickerLink";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { generateSignal, atr } from "@/lib/indicators";
+import { ChevronDown } from "lucide-react";
 
 interface Pick {
   ticker: string;
@@ -413,6 +414,52 @@ function MarginTradeCard({ trade }: { trade: MarginTrade }) {
   );
 }
 
+// Try to recover structured JSON from rawText when API JSON parsing fails
+function tryRecoverJson<T>(text: string, validator: (obj: T) => boolean): T | null {
+  const cleaned = text
+    .replace(/^```(?:json)?\s*\n?/i, "")
+    .replace(/\n?```\s*$/i, "")
+    .trim();
+  // Try multiple extraction strategies
+  const strategies = [
+    () => cleaned,
+    () => cleaned.match(/\{[\s\S]*\}/)?.[0],
+    () => {
+      // Handle case where JSON is split across markdown sections
+      const start = cleaned.indexOf("{");
+      const end = cleaned.lastIndexOf("}");
+      if (start !== -1 && end > start) return cleaned.slice(start, end + 1);
+      return null;
+    },
+  ];
+  for (const extract of strategies) {
+    const candidate = extract();
+    if (!candidate) continue;
+    try {
+      const parsed = JSON.parse(candidate) as T;
+      if (validator(parsed)) return parsed;
+    } catch { /* try next strategy */ }
+  }
+  return null;
+}
+
+function riskToPercent(level: string): number {
+  switch (level) {
+    case "LOW": return 20;
+    case "MEDIUM": return 45;
+    case "HIGH": return 70;
+    case "VERY_HIGH": return 95;
+    default: return 50;
+  }
+}
+
+const RISK_GRADIENT_COLORS: Record<string, string> = {
+  LOW: "from-green-500 to-green-600",
+  MEDIUM: "from-yellow-500 to-yellow-600",
+  HIGH: "from-orange-500 to-orange-600",
+  VERY_HIGH: "from-red-500 to-red-600",
+};
+
 export default function AdvisorPage() {
   const [activeTab, setActiveTab] = useState<"morning" | "strategy" | "margin" | "chat" | "news">("morning");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
@@ -448,6 +495,17 @@ export default function AdvisorPage() {
   const [marginStrategy, setMarginStrategy] = useState<MarginStrategy | null>(null);
   const [marginLoading, setMarginLoading] = useState(false);
   const [marginRawText, setMarginRawText] = useState("");
+
+  // Expandable pick cards in strategy view
+  const [expandedPicks, setExpandedPicks] = useState<Set<string>>(new Set());
+  const togglePick = (id: string) => {
+    setExpandedPicks((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -551,24 +609,30 @@ export default function AdvisorPage() {
         }
       }
 
-      // Optionally fetch earnings tone, fed tone, and geopolitical risk
+      // Optionally fetch earnings tone, fed tone, geopolitical risk, sentiment, and JPX stats
       let earningsTone = null;
       let fedTone = null;
       let geopoliticalRisk = null;
+      let fearGreed = null;
+      let jpxStats = null;
       try {
-        const [etRes, ftRes, geoRes] = await Promise.all([
+        const [etRes, ftRes, geoRes, fgRes, jpxRes] = await Promise.all([
           fetch("/api/earnings-tone").then((r) => r.json()).catch(() => null),
           fetch("/api/fed-tone").then((r) => r.json()).catch(() => null),
           fetch("/api/geopolitical-risk").then((r) => r.json()).catch(() => null),
+          fetch("/api/fear-greed").then((r) => r.json()).catch(() => null),
+          fetch("/api/jpx-stats").then((r) => r.json()).catch(() => null),
         ]);
         earningsTone = etRes;
         fedTone = ftRes;
         geopoliticalRisk = geoRes;
+        fearGreed = fgRes;
+        jpxStats = jpxRes;
       } catch {
         // optional data, ignore errors
       }
 
-      setMarketContext({ ...ctx, holdings: enrichedHoldings, geopoliticalRisk });
+      setMarketContext({ ...ctx, holdings: enrichedHoldings, geopoliticalRisk, fearGreed, jpxStats });
 
       const res = await fetch("/api/daily-strategy", {
         method: "POST",
@@ -581,6 +645,8 @@ export default function AdvisorPage() {
           earningsTone,
           fedTone,
           geopoliticalRisk,
+          fearGreed,
+          jpxStats,
         }),
       });
       const data = await res.json();
@@ -588,7 +654,12 @@ export default function AdvisorPage() {
       if (data.strategy) {
         setStrategy(data.strategy);
       } else if (data.rawText) {
-        setRawText(data.rawText);
+        const recovered = tryRecoverJson<Strategy>(data.rawText, (s) => !!(s.marketOverview || s.strategies));
+        if (recovered) {
+          setStrategy(recovered);
+        } else {
+          setRawText(data.rawText);
+        }
       } else if (data.error) {
         setRawText(`エラー: ${data.error}`);
       }
@@ -724,13 +795,19 @@ export default function AdvisorPage() {
 
       let fedTone = null;
       let geopoliticalRisk = null;
+      let fearGreed = null;
+      let jpxStats = null;
       try {
-        const [ftRes, geoRes] = await Promise.all([
+        const [ftRes, geoRes, fgRes, jpxRes] = await Promise.all([
           fetch("/api/fed-tone").then((r) => r.json()).catch(() => null),
           fetch("/api/geopolitical-risk").then((r) => r.json()).catch(() => null),
+          fetch("/api/fear-greed").then((r) => r.json()).catch(() => null),
+          fetch("/api/jpx-stats").then((r) => r.json()).catch(() => null),
         ]);
         fedTone = ftRes;
         geopoliticalRisk = geoRes;
+        fearGreed = fgRes;
+        jpxStats = jpxRes;
       } catch { /* optional */ }
 
       const res = await fetch("/api/morning-brief", {
@@ -743,13 +820,20 @@ export default function AdvisorPage() {
           holdings,
           fedTone,
           geopoliticalRisk,
+          fearGreed,
+          jpxStats,
         }),
       });
       const data = await res.json();
       if (data.brief) {
         setMorningBrief(data.brief);
       } else if (data.rawText) {
-        setMorningRawText(data.rawText);
+        const recovered = tryRecoverJson<MorningBriefData>(data.rawText, (b) => !!(b.oneLineCall || b.overnightSummary));
+        if (recovered) {
+          setMorningBrief(recovered);
+        } else {
+          setMorningRawText(data.rawText);
+        }
       } else if (data.error) {
         setMorningRawText(`エラー: ${data.error}`);
       }
@@ -772,19 +856,25 @@ export default function AdvisorPage() {
         fetch("/api/news?category=global").then((r) => r.json()),
       ]);
 
-      // Fetch optional tone data + geopolitical risk
+      // Fetch optional tone data + geopolitical risk + sentiment + JPX stats
       let earningsTone = null;
       let fedTone = null;
       let geopoliticalRisk = null;
+      let fearGreed = null;
+      let jpxStats = null;
       try {
-        const [etRes, ftRes, geoRes] = await Promise.all([
+        const [etRes, ftRes, geoRes, fgRes, jpxRes] = await Promise.all([
           fetch("/api/earnings-tone").then((r) => r.json()).catch(() => null),
           fetch("/api/fed-tone").then((r) => r.json()).catch(() => null),
           fetch("/api/geopolitical-risk").then((r) => r.json()).catch(() => null),
+          fetch("/api/fear-greed").then((r) => r.json()).catch(() => null),
+          fetch("/api/jpx-stats").then((r) => r.json()).catch(() => null),
         ]);
         earningsTone = etRes;
         fedTone = ftRes;
         geopoliticalRisk = geoRes;
+        fearGreed = fgRes;
+        jpxStats = jpxRes;
       } catch { /* optional */ }
 
       // Collect all tickers to scan: MARGIN_CANDIDATES + existing margin holdings
@@ -880,6 +970,8 @@ export default function AdvisorPage() {
           earningsTone,
           fedTone,
           geopoliticalRisk,
+          fearGreed,
+          jpxStats,
           candidateTickers,
           marginHoldings,
         }),
@@ -889,7 +981,12 @@ export default function AdvisorPage() {
       if (data.strategy) {
         setMarginStrategy(data.strategy);
       } else if (data.rawText) {
-        setMarginRawText(data.rawText);
+        const recovered = tryRecoverJson<MarginStrategy>(data.rawText, (s) => !!(s.marketVerdict || s.marginBuyCandidates));
+        if (recovered) {
+          setMarginStrategy(recovered);
+        } else {
+          setMarginRawText(data.rawText);
+        }
       } else if (data.error) {
         setMarginRawText(`エラー: ${data.error}`);
       }
@@ -1179,387 +1276,435 @@ export default function AdvisorPage() {
       {/* ===== STRATEGY TAB ===== */}
       {activeTab === "strategy" && (
         <div>
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex justify-between items-center mb-6">
             <p className="text-sm text-zinc-400">
               市場データ・経済指標・ニュース
               {holdings.length > 0 && `・保有${holdings.length}銘柄`}
-              を分析し、具体的な銘柄推薦を生成します
+              を統合分析
             </p>
             <button
               onClick={generateStrategy}
               disabled={strategyLoading}
-              className="px-6 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-sm font-medium"
+              className="px-6 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-sm font-bold transition-colors"
             >
-              {strategyLoading ? "分析中..." : "今日の戦略を生成"}
+              {strategyLoading ? "分析中..." : "戦略を生成"}
             </button>
           </div>
 
           {strategyLoading && (
-            <div className="text-center text-zinc-500 py-12">
-              <div className="animate-pulse">
-                市場データを収集し、戦略を生成中...（30秒ほどかかります）
-              </div>
+            <div className="text-center text-zinc-500 py-16">
+              <div className="inline-block w-8 h-8 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-4" />
+              <div className="text-sm">市場データを収集し、戦略を生成中...</div>
             </div>
           )}
 
           {strategy && (
-            <div className="space-y-6">
-              {/* Market Overview */}
-              <div className="border border-zinc-800 rounded-lg p-4">
-                <h2 className="text-lg font-semibold mb-2">市場概況</h2>
-                <p className="text-sm text-zinc-300 leading-relaxed">
-                  {strategy.marketOverview}
-                </p>
-              </div>
+            <div className="space-y-5">
 
-              {/* Risk Level */}
-              <div
-                className={clsx(
-                  "border rounded-lg p-4",
-                  RISK_COLORS[strategy.riskLevel] || RISK_COLORS.MEDIUM
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl">
-                    {strategy.riskLevel === "LOW"
-                      ? "🟢"
-                      : strategy.riskLevel === "MEDIUM"
-                        ? "🟡"
-                        : strategy.riskLevel === "HIGH"
-                          ? "🟠"
-                          : "🔴"}
-                  </span>
-                  <div>
-                    <div className="font-bold">
-                      本日のリスクレベル: {RISK_LABELS[strategy.riskLevel] || strategy.riskLevel}
-                    </div>
-                    <div className="text-sm mt-1 opacity-80">{strategy.riskComment}</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Macro Regime */}
-              {strategy.macroRegime && (
-                <div className="border border-zinc-800 rounded-lg p-3">
-                  <span className="text-xs text-zinc-500">マクロレジーム: </span>
-                  <span className="text-sm text-cyan-400 font-medium">{strategy.macroRegime}</span>
-                </div>
-              )}
-
-              {/* Portfolio Health */}
-              {strategy.portfolioHealth && (
-                <div className="border border-yellow-800/30 bg-yellow-950/10 rounded-lg p-4">
-                  <h2 className="text-sm font-semibold text-yellow-400 mb-2">ポートフォリオ健全性</h2>
-                  <div className="space-y-1 text-sm">
-                    <div><span className="text-zinc-500">セクター集中度: </span><span className="text-zinc-300">{strategy.portfolioHealth.sectorConcentration}</span></div>
-                    <div><span className="text-zinc-500">最大リスク: </span><span className="text-zinc-300">{strategy.portfolioHealth.topRisk}</span></div>
-                    {strategy.portfolioHealth.driftAlert && (
-                      <div><span className="text-zinc-500">ドリフト警告: </span><span className="text-orange-400">{strategy.portfolioHealth.driftAlert}</span></div>
+              {/* ── EXECUTIVE DASHBOARD ── */}
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
+                {/* Market Overview */}
+                <div className="border border-zinc-800 rounded-xl p-5 bg-gradient-to-br from-zinc-900/80 to-zinc-950">
+                  <div className="flex items-center gap-3 mb-3">
+                    <h2 className="text-base font-bold text-zinc-100">市場概況</h2>
+                    {strategy.macroRegime && (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-medium">
+                        {strategy.macroRegime}
+                      </span>
                     )}
+                  </div>
+                  <p className="text-sm text-zinc-300 leading-relaxed">{strategy.marketOverview}</p>
+                </div>
+
+                {/* Risk Gauge */}
+                <div className={clsx(
+                  "border rounded-xl p-5 flex flex-col items-center justify-center text-center",
+                  RISK_COLORS[strategy.riskLevel] || RISK_COLORS.MEDIUM
+                )}>
+                  <div className="text-[10px] uppercase tracking-widest text-zinc-400 mb-1">Risk Level</div>
+                  <div className="text-2xl font-black mb-2">
+                    {RISK_LABELS[strategy.riskLevel] || strategy.riskLevel}
+                  </div>
+                  {/* Gauge bar */}
+                  <div className="w-full h-2 rounded-full bg-zinc-800/80 overflow-hidden mb-3">
+                    <div
+                      className={clsx("h-full rounded-full bg-gradient-to-r transition-all duration-1000", RISK_GRADIENT_COLORS[strategy.riskLevel] || "from-yellow-500 to-yellow-600")}
+                      style={{ width: `${riskToPercent(strategy.riskLevel)}%` }}
+                    />
+                  </div>
+                  <p className="text-xs leading-relaxed opacity-80">{strategy.riskComment}</p>
+                </div>
+              </div>
+
+              {/* ── PORTFOLIO HEALTH ── */}
+              {strategy.portfolioHealth && (
+                <div className="border border-zinc-800 rounded-xl overflow-hidden">
+                  <div className="bg-yellow-500/5 border-b border-zinc-800 px-5 py-3 flex items-center gap-2">
+                    <span className="text-yellow-400 text-sm">&#9888;</span>
+                    <h2 className="text-sm font-bold text-yellow-400">ポートフォリオ診断</h2>
+                  </div>
+                  <div className="p-5">
+                    {/* KPI row */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                      <div className="bg-zinc-900/60 rounded-lg p-3">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">セクター集中度</div>
+                        <div className={clsx(
+                          "text-sm font-bold",
+                          strategy.portfolioHealth.sectorConcentration === "問題なし" ? "text-green-400" :
+                          strategy.portfolioHealth.sectorConcentration === "やや偏り" ? "text-yellow-400" :
+                          "text-red-400"
+                        )}>
+                          {strategy.portfolioHealth.sectorConcentration}
+                        </div>
+                      </div>
+                      <div className="bg-zinc-900/60 rounded-lg p-3 md:col-span-2">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">最大リスク</div>
+                        <div className="text-sm text-zinc-300">{strategy.portfolioHealth.topRisk}</div>
+                      </div>
+                    </div>
+
+                    {/* Drift alert */}
+                    {strategy.portfolioHealth.driftAlert && (
+                      <div className="bg-orange-500/5 border border-orange-800/30 rounded-lg p-3 mb-4">
+                        <div className="text-[10px] uppercase tracking-wider text-orange-500 mb-1">ドリフト警告</div>
+                        <div className="text-sm text-orange-300">{strategy.portfolioHealth.driftAlert}</div>
+                      </div>
+                    )}
+
+                    {/* Rebalance actions */}
                     {strategy.portfolioHealth.rebalanceActions?.length > 0 && (
-                      <div className="mt-2">
-                        <span className="text-zinc-500 text-xs">リバランス提案:</span>
-                        {strategy.portfolioHealth.rebalanceActions.map((a, i) => (
-                          <div key={i} className="text-zinc-300 ml-2">→ {a}</div>
-                        ))}
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">リバランス提案</div>
+                        <div className="space-y-2">
+                          {strategy.portfolioHealth.rebalanceActions.map((a, i) => (
+                            <div key={i} className="flex items-start gap-2.5 text-sm bg-zinc-900/40 rounded-lg px-3 py-2.5">
+                              <span className="text-yellow-500 shrink-0 mt-0.5 font-bold">{i + 1}</span>
+                              <span className="text-zinc-300">{a}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
                 </div>
               )}
 
-              {/* Holdings Verdict */}
+              {/* ── HOLDINGS VERDICT ── */}
               {strategy.holdingsVerdict && strategy.holdingsVerdict.length > 0 && (
-                <div className="border border-zinc-800 rounded-lg p-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 mb-2">保有銘柄判定</h2>
-                  <div className="space-y-1">
+                <div className="border border-zinc-800 rounded-xl overflow-hidden">
+                  <div className="bg-zinc-900/80 border-b border-zinc-800 px-5 py-3 flex items-center justify-between">
+                    <h2 className="text-sm font-bold text-zinc-200">保有銘柄判定</h2>
+                    <span className="text-xs text-zinc-500 font-mono">{strategy.holdingsVerdict.length} holdings</span>
+                  </div>
+                  <div className="divide-y divide-zinc-800/60">
                     {strategy.holdingsVerdict.map((hv, i) => (
-                      <div key={i} className="flex items-center gap-2 text-sm">
-                        <TickerLink ticker={hv.ticker} />
+                      <div key={i} className="px-5 py-3 flex items-center gap-3 hover:bg-zinc-800/20 transition-colors">
+                        <TickerLink ticker={hv.ticker} className="font-mono text-blue-400 font-bold text-sm w-16 shrink-0" />
                         <span className={clsx(
-                          "px-1.5 py-0.5 rounded text-xs font-bold",
-                          hv.action === "損切り" ? "bg-red-500/20 text-red-400" :
-                          hv.action === "全利確" || hv.action === "部分利確" ? "bg-green-500/20 text-green-400" :
-                          hv.action === "買い増し" ? "bg-blue-500/20 text-blue-400" :
-                          "bg-zinc-700 text-zinc-300"
+                          "px-2 py-0.5 rounded text-xs font-bold shrink-0 min-w-[60px] text-center",
+                          hv.action === "損切り" ? "bg-red-500/20 text-red-400 border border-red-500/30" :
+                          hv.action === "全利確" || hv.action === "部分利確" ? "bg-green-500/20 text-green-400 border border-green-500/30" :
+                          hv.action === "買い増し" ? "bg-blue-500/20 text-blue-400 border border-blue-500/30" :
+                          "bg-zinc-700/50 text-zinc-300 border border-zinc-600/30"
                         )}>
                           {hv.action}
                         </span>
                         <span className={clsx(
-                          "text-xs px-1 rounded",
-                          hv.thesisStatus === "有効" ? "text-green-500" :
-                          hv.thesisStatus === "崩壊" ? "text-red-500" :
-                          "text-yellow-500"
+                          "text-xs px-1.5 py-0.5 rounded shrink-0",
+                          hv.thesisStatus === "有効" ? "text-green-400 bg-green-500/10" :
+                          hv.thesisStatus === "崩壊" ? "text-red-400 bg-red-500/10" :
+                          "text-yellow-400 bg-yellow-500/10"
                         )}>
-                          [{hv.thesisStatus}]
+                          {hv.thesisStatus}
                         </span>
-                        <span className="text-zinc-500 text-xs flex-1">{hv.reason}</span>
+                        <span className="text-xs text-zinc-500 flex-1 truncate">{hv.reason}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* Catalysts */}
+              {/* ── CATALYST TIMELINE ── */}
               {strategy.catalysts && strategy.catalysts.length > 0 && (
-                <div className="border border-zinc-800 rounded-lg p-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 mb-2">今後のカタリスト</h2>
-                  {strategy.catalysts.map((c, i) => (
-                    <div key={i} className="flex gap-2 text-sm mb-1">
-                      <span className="text-zinc-500 font-mono shrink-0">{c.date}</span>
-                      <span className="text-zinc-300">{c.event}</span>
-                      <span className="text-zinc-500">{c.impact}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Strategy sections */}
-              {(["shortTerm", "midTerm", "longTerm"] as const).map((key) => {
-                const section = strategy.strategies[key];
-                if (!section) return null;
-                const borderColor =
-                  key === "shortTerm"
-                    ? "border-orange-800/50"
-                    : key === "midTerm"
-                      ? "border-blue-800/50"
-                      : "border-green-800/50";
-
-                return (
-                  <div key={key} className={clsx("border rounded-lg p-4", borderColor)}>
-                    <h2 className="text-lg font-semibold mb-1">{section.title}</h2>
-                    <p className="text-sm text-zinc-400 mb-4">{section.description}</p>
-
-                    <div className="space-y-3">
-                      {section.picks?.map((pick, i) => (
-                        <div
-                          key={i}
-                          className="border border-zinc-800 rounded-lg p-3 bg-zinc-900/50"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <TickerLink
-                                ticker={pick.ticker}
-                                className="font-mono text-blue-400 font-bold hover:underline"
-                              />
-                              <span className="text-sm text-zinc-300">{pick.name}</span>
-                              <span
-                                className={clsx(
-                                  "px-2 py-0.5 rounded text-xs font-bold",
-                                  pick.action.includes("買")
-                                    ? "bg-green-500/20 text-green-400"
-                                    : pick.action.includes("売")
-                                      ? "bg-red-500/20 text-red-400"
-                                      : "bg-zinc-700 text-zinc-300"
-                                )}
-                              >
-                                {pick.action}
-                              </span>
-                            </div>
+                <div className="border border-zinc-800 rounded-xl overflow-hidden">
+                  <div className="bg-zinc-900/80 border-b border-zinc-800 px-5 py-3">
+                    <h2 className="text-sm font-bold text-zinc-200">カタリスト・タイムライン</h2>
+                  </div>
+                  <div className="p-5">
+                    <div className="relative border-l-2 border-zinc-700/60 ml-3 space-y-5">
+                      {strategy.catalysts.map((c, i) => (
+                        <div key={i} className="relative pl-7">
+                          {/* Timeline dot */}
+                          <div className={clsx(
+                            "absolute -left-[9px] top-0.5 w-4 h-4 rounded-full border-2",
+                            i === 0 ? "bg-blue-500/30 border-blue-400" : "bg-zinc-800 border-zinc-600"
+                          )} />
+                          <div className="flex flex-col gap-1">
                             <div className="flex items-center gap-3">
-                              <div className="text-right">
-                                <div className="text-xs text-zinc-500">勝率</div>
-                                <div
-                                  className={clsx(
-                                    "text-lg font-bold",
-                                    pick.winProbability >= 60
-                                      ? "text-green-400"
-                                      : pick.winProbability >= 45
-                                        ? "text-yellow-400"
-                                        : "text-red-400"
-                                  )}
-                                >
-                                  {pick.winProbability}%
-                                </div>
+                              <span className="text-xs font-mono text-blue-400 shrink-0 bg-blue-500/10 px-2 py-0.5 rounded">{c.date}</span>
+                              <span className="text-sm font-medium text-zinc-200">{c.event}</span>
+                            </div>
+                            <p className="text-xs text-zinc-500 leading-relaxed">{c.impact}</p>
+                            {c.affectedTickers?.length > 0 && (
+                              <div className="flex gap-1.5 mt-0.5">
+                                {c.affectedTickers.map((t, j) => (
+                                  <TickerLink key={j} ticker={t} className="text-xs font-mono text-blue-400/70 hover:text-blue-400" />
+                                ))}
                               </div>
-                            </div>
-                          </div>
-
-                          <p className="text-sm text-zinc-400 mt-2">{pick.reason}</p>
-
-                          {/* Thesis & Valuation */}
-                          {(pick.thesis || pick.valuation) && (
-                            <div className="mt-2 space-y-1">
-                              {pick.thesis && (
-                                <div className="text-xs">
-                                  <span className="text-cyan-500">テーゼ: </span>
-                                  <span className="text-zinc-300">{pick.thesis}</span>
-                                </div>
-                              )}
-                              {pick.thesisBreaker && (
-                                <div className="text-xs">
-                                  <span className="text-red-500">撤退条件: </span>
-                                  <span className="text-zinc-400">{pick.thesisBreaker}</span>
-                                </div>
-                              )}
-                              {pick.valuation && (
-                                <div className="text-xs">
-                                  <span className="text-purple-500">バリュエーション: </span>
-                                  <span className="text-zinc-400">{pick.valuation}</span>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Price targets */}
-                          <div className="flex gap-4 mt-3 text-xs">
-                            <div>
-                              <span className="text-zinc-500">エントリー: </span>
-                              <span className="text-white font-mono font-bold">
-                                ¥{pick.entryPrice?.toLocaleString()}
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-zinc-500">利確: </span>
-                              <span className="text-green-400 font-mono font-bold">
-                                ¥{pick.targetPrice?.toLocaleString()}
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-zinc-500">損切り: </span>
-                              <span className="text-red-400 font-mono font-bold">
-                                ¥{pick.stopLoss?.toLocaleString()}
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-zinc-500">RR比: </span>
-                              <span className="text-cyan-400 font-mono">{pick.riskReward}</span>
-                            </div>
-                            <div>
-                              <span className="text-zinc-500">期間: </span>
-                              <span className="text-zinc-300">{pick.timeframe}</span>
-                            </div>
-                          </div>
-
-                          {/* IFDOCO Order Section */}
-                          {pick.ifdoco && (
-                            <div className="mt-3 border border-zinc-700 rounded p-2 bg-zinc-950/50">
-                              <div className="text-xs font-semibold text-zinc-400 mb-1">
-                                IFDOCO注文設定
-                              </div>
-                              <div className="grid grid-cols-3 gap-2 text-xs">
-                                <div>
-                                  <span className="text-zinc-500">IF注文: </span>
-                                  <span className="text-white font-mono">
-                                    {pick.ifdoco.entryOrder.type} ¥{pick.ifdoco.entryOrder.price?.toLocaleString()}
-                                  </span>
-                                </div>
-                                <div>
-                                  <span className="text-zinc-500">OCO利確: </span>
-                                  <span className="text-green-400 font-mono">
-                                    ¥{pick.ifdoco.takeProfit.price?.toLocaleString()}
-                                  </span>
-                                </div>
-                                <div>
-                                  <span className="text-zinc-500">OCO損切: </span>
-                                  <span className="text-red-400 font-mono">
-                                    ¥{pick.ifdoco.stopLoss.price?.toLocaleString()}
-                                  </span>
-                                </div>
-                              </div>
-                              {(pick.holdingPeriod || pick.exitDate) && (
-                                <div className="flex gap-4 mt-1 text-xs">
-                                  {pick.holdingPeriod && (
-                                    <div>
-                                      <span className="text-zinc-500">保有期間: </span>
-                                      <span className="text-zinc-300">{pick.holdingPeriod}</span>
-                                    </div>
-                                  )}
-                                  {pick.exitDate && (
-                                    <div>
-                                      <span className="text-zinc-500">決済予定: </span>
-                                      <span className="text-yellow-400">{pick.exitDate}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Dividend & Benefits */}
-                          {(pick.dividend || pick.shareholderBenefits) && (
-                            <div className="flex gap-4 mt-2 text-xs">
-                              {pick.dividend && (
-                                <div>
-                                  <span className="text-zinc-500">配当: </span>
-                                  <span className="text-yellow-400">{pick.dividend}</span>
-                                </div>
-                              )}
-                              {pick.shareholderBenefits && (
-                                <div>
-                                  <span className="text-zinc-500">優待: </span>
-                                  <span className="text-pink-400">
-                                    {pick.shareholderBenefits}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Win probability bar */}
-                          <div className="mt-2 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                            <div
-                              className={clsx(
-                                "h-full rounded-full transition-all duration-1000",
-                                pick.winProbability >= 60
-                                  ? "bg-green-500"
-                                  : pick.winProbability >= 45
-                                    ? "bg-yellow-500"
-                                    : "bg-red-500"
-                              )}
-                              style={{ width: `${pick.winProbability}%` }}
-                            />
+                            )}
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
-                );
-              })}
-
-              {/* Overall advice */}
-              <div className="border border-purple-800/50 bg-purple-950/20 rounded-lg p-4">
-                <h2 className="text-lg font-semibold mb-2">全体アドバイス</h2>
-                <p className="text-sm text-zinc-300 leading-relaxed">
-                  {strategy.overallAdvice}
-                </p>
-              </div>
-
-              {/* Watch list */}
-              {strategy.watchList && strategy.watchList.length > 0 && (
-                <div className="border border-zinc-800 rounded-lg p-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 mb-2">
-                    今日の注目ポイント
-                  </h2>
-                  <ul className="space-y-1">
-                    {strategy.watchList.map((item, i) => (
-                      <li key={i} className="text-sm text-zinc-300 flex gap-2">
-                        <span className="text-yellow-500 shrink-0">•</span>
-                        <span>{renderWithTickerLinks(item)}</span>
-                      </li>
-                    ))}
-                  </ul>
                 </div>
               )}
 
-              {/* Tax Optimization */}
+              {/* ── STRATEGY SECTIONS (Short / Mid / Long) ── */}
+              {(["shortTerm", "midTerm", "longTerm"] as const).map((key) => {
+                const section = strategy.strategies[key];
+                if (!section) return null;
+                const config = {
+                  shortTerm: { gradient: "from-orange-500/8 to-transparent", accent: "border-orange-800/40", badge: "bg-orange-500/15 text-orange-400" },
+                  midTerm: { gradient: "from-blue-500/8 to-transparent", accent: "border-blue-800/40", badge: "bg-blue-500/15 text-blue-400" },
+                  longTerm: { gradient: "from-emerald-500/8 to-transparent", accent: "border-emerald-800/40", badge: "bg-emerald-500/15 text-emerald-400" },
+                }[key];
+
+                return (
+                  <div key={key} className={clsx("border rounded-xl overflow-hidden", config.accent)}>
+                    {/* Section header */}
+                    <div className={`bg-gradient-to-r ${config.gradient} border-b border-zinc-800/60 px-5 py-4`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <h2 className="text-base font-bold text-zinc-100">{section.title}</h2>
+                        <span className={clsx("px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider", config.badge)}>
+                          {key === "shortTerm" ? "Short" : key === "midTerm" ? "Mid" : "Long"}
+                        </span>
+                      </div>
+                      <p className="text-sm text-zinc-400">{section.description}</p>
+                    </div>
+
+                    {/* Picks as expandable rows */}
+                    <div className="divide-y divide-zinc-800/40">
+                      {section.picks?.map((pick, i) => {
+                        const pickId = `${key}-${i}`;
+                        const isExpanded = expandedPicks.has(pickId);
+
+                        return (
+                          <div key={i} className="bg-zinc-950/30">
+                            {/* Pick summary row (always visible, clickable) */}
+                            <button
+                              onClick={() => togglePick(pickId)}
+                              className="w-full px-5 py-4 flex items-center gap-3 hover:bg-zinc-800/20 transition-colors text-left"
+                            >
+                              {/* Ticker + Name + Action */}
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <TickerLink ticker={pick.ticker} className="font-mono text-blue-400 font-bold text-sm shrink-0" />
+                                <span className="text-sm text-zinc-300 truncate">{pick.name}</span>
+                                <span className={clsx(
+                                  "px-2 py-0.5 rounded text-xs font-bold shrink-0",
+                                  pick.action.includes("買") ? "bg-green-500/20 text-green-400" :
+                                  pick.action.includes("売") ? "bg-red-500/20 text-red-400" :
+                                  "bg-zinc-700 text-zinc-300"
+                                )}>
+                                  {pick.action}
+                                </span>
+                              </div>
+
+                              {/* Price range mini */}
+                              <div className="hidden lg:flex items-center gap-1 text-xs shrink-0">
+                                <span className="text-zinc-500 font-mono">¥{pick.entryPrice?.toLocaleString()}</span>
+                                <span className="text-zinc-600">→</span>
+                                <span className="text-green-400 font-mono">¥{pick.targetPrice?.toLocaleString()}</span>
+                              </div>
+
+                              {/* Win probability */}
+                              <div className="flex items-center gap-2 shrink-0">
+                                <div className="w-14 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                                  <div
+                                    className={clsx(
+                                      "h-full rounded-full",
+                                      pick.winProbability >= 60 ? "bg-green-500" :
+                                      pick.winProbability >= 45 ? "bg-yellow-500" : "bg-red-500"
+                                    )}
+                                    style={{ width: `${pick.winProbability}%` }}
+                                  />
+                                </div>
+                                <span className={clsx(
+                                  "text-sm font-bold font-mono w-10 text-right",
+                                  pick.winProbability >= 60 ? "text-green-400" :
+                                  pick.winProbability >= 45 ? "text-yellow-400" : "text-red-400"
+                                )}>
+                                  {pick.winProbability}%
+                                </span>
+                              </div>
+
+                              {/* Chevron */}
+                              <ChevronDown className={clsx(
+                                "w-4 h-4 text-zinc-500 transition-transform duration-200 shrink-0",
+                                isExpanded && "rotate-180"
+                              )} />
+                            </button>
+
+                            {/* Expanded detail panel */}
+                            {isExpanded && (
+                              <div className="px-5 pb-5 space-y-4 border-t border-zinc-800/30 bg-zinc-900/20">
+                                {/* Reason */}
+                                <p className="text-sm text-zinc-400 pt-4 leading-relaxed">{pick.reason}</p>
+
+                                {/* Thesis & Exit condition */}
+                                {(pick.thesis || pick.thesisBreaker) && (
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {pick.thesis && (
+                                      <div className="bg-cyan-500/5 border border-cyan-800/20 rounded-lg p-3">
+                                        <div className="text-[10px] uppercase tracking-wider text-cyan-500 font-bold mb-1">投資テーゼ</div>
+                                        <div className="text-sm text-zinc-300 leading-relaxed">{pick.thesis}</div>
+                                      </div>
+                                    )}
+                                    {pick.thesisBreaker && (
+                                      <div className="bg-red-500/5 border border-red-800/20 rounded-lg p-3">
+                                        <div className="text-[10px] uppercase tracking-wider text-red-500 font-bold mb-1">撤退条件</div>
+                                        <div className="text-sm text-zinc-400 leading-relaxed">{pick.thesisBreaker}</div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Valuation */}
+                                {pick.valuation && (
+                                  <div className="bg-purple-500/5 border border-purple-800/20 rounded-lg p-3">
+                                    <div className="text-[10px] uppercase tracking-wider text-purple-500 font-bold mb-1">バリュエーション</div>
+                                    <div className="text-sm text-zinc-400 leading-relaxed">{pick.valuation}</div>
+                                  </div>
+                                )}
+
+                                {/* Price targets grid */}
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                  <div className="bg-zinc-900/80 rounded-lg p-3 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-1">Entry</div>
+                                    <div className="text-lg font-black font-mono text-white">¥{pick.entryPrice?.toLocaleString()}</div>
+                                  </div>
+                                  <div className="bg-zinc-900/80 rounded-lg p-3 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-1">Target</div>
+                                    <div className="text-lg font-black font-mono text-green-400">¥{pick.targetPrice?.toLocaleString()}</div>
+                                  </div>
+                                  <div className="bg-zinc-900/80 rounded-lg p-3 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-1">Stop Loss</div>
+                                    <div className="text-lg font-black font-mono text-red-400">¥{pick.stopLoss?.toLocaleString()}</div>
+                                  </div>
+                                  <div className="bg-zinc-900/80 rounded-lg p-3 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-1">Risk/Reward</div>
+                                    <div className="text-lg font-black font-mono text-cyan-400">{pick.riskReward}</div>
+                                  </div>
+                                  <div className="bg-zinc-900/80 rounded-lg p-3 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-1">Timeframe</div>
+                                    <div className="text-base font-bold text-zinc-300">{pick.timeframe}</div>
+                                  </div>
+                                </div>
+
+                                {/* IFDOCO Order Ticket */}
+                                {pick.ifdoco && (
+                                  <div className="border-2 border-yellow-700/30 bg-yellow-950/5 rounded-xl p-4">
+                                    <div className="flex items-center gap-2 mb-3">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
+                                      <span className="text-sm font-bold text-yellow-400">IFDOCO注文</span>
+                                      <span className="text-[10px] text-zinc-500 uppercase tracking-wider">SBI証券</span>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-4">
+                                      <div className="bg-zinc-900/80 rounded-lg p-4 text-center">
+                                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">IF 新規建て</div>
+                                        <div className="text-xs text-zinc-400 mb-1">{pick.ifdoco.entryOrder.type}</div>
+                                        <div className="text-2xl font-black font-mono text-white">¥{pick.ifdoco.entryOrder.price?.toLocaleString()}</div>
+                                      </div>
+                                      <div className="bg-zinc-900/80 rounded-lg p-4 text-center border border-green-800/20">
+                                        <div className="text-[10px] text-green-500 uppercase tracking-wider mb-1">OCO 利確</div>
+                                        <div className="text-xs text-zinc-400 mb-1">{pick.ifdoco.takeProfit.type}</div>
+                                        <div className="text-2xl font-black font-mono text-green-400">¥{pick.ifdoco.takeProfit.price?.toLocaleString()}</div>
+                                      </div>
+                                      <div className="bg-zinc-900/80 rounded-lg p-4 text-center border border-red-800/20">
+                                        <div className="text-[10px] text-red-500 uppercase tracking-wider mb-1">OCO 損切</div>
+                                        <div className="text-xs text-zinc-400 mb-1">{pick.ifdoco.stopLoss.type}</div>
+                                        <div className="text-2xl font-black font-mono text-red-400">¥{pick.ifdoco.stopLoss.price?.toLocaleString()}</div>
+                                      </div>
+                                    </div>
+                                    {(pick.holdingPeriod || pick.exitDate) && (
+                                      <div className="flex gap-6 mt-3 text-xs justify-center text-zinc-400">
+                                        {pick.holdingPeriod && <span>保有期間: <span className="text-zinc-300">{pick.holdingPeriod}</span></span>}
+                                        {pick.exitDate && <span>決済予定: <span className="text-yellow-400">{pick.exitDate}</span></span>}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Dividend & Benefits */}
+                                {(pick.dividend || pick.shareholderBenefits) && (
+                                  <div className="flex flex-wrap gap-3">
+                                    {pick.dividend && (
+                                      <div className="bg-zinc-900/60 rounded-lg px-3 py-2 text-sm">
+                                        <span className="text-zinc-500 text-xs mr-1">配当:</span>
+                                        <span className="text-yellow-400 font-medium">{pick.dividend}</span>
+                                      </div>
+                                    )}
+                                    {pick.shareholderBenefits && (
+                                      <div className="bg-zinc-900/60 rounded-lg px-3 py-2 text-sm">
+                                        <span className="text-zinc-500 text-xs mr-1">優待:</span>
+                                        <span className="text-pink-400 font-medium">{pick.shareholderBenefits}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* ── OVERALL ADVICE ── */}
+              <div className="border border-purple-800/30 bg-gradient-to-br from-purple-950/20 to-zinc-950 rounded-xl p-6">
+                <h2 className="text-base font-bold mb-3 text-zinc-100">全体アドバイス</h2>
+                <p className="text-sm text-zinc-300 leading-relaxed">{strategy.overallAdvice}</p>
+              </div>
+
+              {/* ── WATCH LIST ── */}
+              {strategy.watchList && strategy.watchList.length > 0 && (
+                <div className="border border-zinc-800 rounded-xl overflow-hidden">
+                  <div className="bg-zinc-900/80 border-b border-zinc-800 px-5 py-3">
+                    <h2 className="text-sm font-bold text-zinc-200">注目ポイント</h2>
+                  </div>
+                  <div className="p-5">
+                    <ul className="space-y-2">
+                      {strategy.watchList.map((item, i) => (
+                        <li key={i} className="text-sm text-zinc-300 flex gap-2">
+                          <span className="text-yellow-500 shrink-0">&#x25CF;</span>
+                          <span>{renderWithTickerLinks(item)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {/* ── TAX OPTIMIZATION ── */}
               {strategy.taxOptimization && (
-                <div className="border border-emerald-800/30 bg-emerald-950/10 rounded-lg p-4">
-                  <h2 className="text-sm font-semibold text-emerald-400 mb-2">税金最適化</h2>
+                <div className="border border-emerald-800/20 bg-emerald-950/5 rounded-xl p-5">
+                  <h2 className="text-sm font-bold text-emerald-400 mb-2">税金最適化</h2>
                   <p className="text-sm text-zinc-300 leading-relaxed">{strategy.taxOptimization}</p>
                 </div>
               )}
 
-              {/* Disclaimer */}
-              <div className="text-xs text-zinc-600 p-3 border border-zinc-800/50 rounded">
+              {/* ── DISCLAIMER ── */}
+              <div className="text-xs text-zinc-600 p-4 border border-zinc-800/30 rounded-xl bg-zinc-950/50">
                 {strategy.disclaimer || "本分析は情報提供を目的としたものであり、投資助言ではありません。投資判断は自己責任でお願いします。"}
               </div>
 
-              {/* Quick jump to chat */}
+              {/* Quick jump */}
               <div className="text-center">
                 <button
                   onClick={() => setActiveTab("chat")}
-                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm"
+                  className="px-6 py-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
                 >
                   この戦略についてAIに相談する →
                 </button>
@@ -1568,20 +1713,19 @@ export default function AdvisorPage() {
           )}
 
           {rawText && !strategy && (
-            <div className="border border-zinc-800 rounded-lg p-4">
+            <div className="border border-zinc-800 rounded-xl p-5">
               <MarkdownRenderer content={rawText} />
             </div>
           )}
 
           {!strategy && !rawText && !strategyLoading && (
-            <div className="text-center text-zinc-500 mt-12">
-              <p className="text-lg">「今日の戦略を生成」で投資戦略を取得</p>
-              <p className="text-sm mt-2">
+            <div className="text-center text-zinc-500 mt-16 space-y-3">
+              <div className="text-4xl opacity-20">&#128202;</div>
+              <p className="text-lg font-medium">投資戦略を生成</p>
+              <p className="text-sm max-w-lg mx-auto leading-relaxed">
                 世界市場データ・経済指標・ニュース
                 {holdings.length > 0 && `・保有${holdings.length}銘柄のシグナル`}
-                を総合分析し、
-                <br />
-                短期・中期・長期の具体的銘柄推薦を生成します
+                を総合分析し、短期・中期・長期の具体的銘柄推薦を生成します
               </p>
             </div>
           )}
