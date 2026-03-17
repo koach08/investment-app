@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { clsx } from "clsx";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 interface StockEntry {
   code: string;
@@ -192,8 +193,8 @@ export default function StudyPage() {
           {loading ? (
             <div className="text-zinc-400 animate-pulse">分析中...（30秒ほどお待ちください）</div>
           ) : (
-            <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed max-h-[600px] overflow-y-auto">
-              {analysis}
+            <div className="max-h-[600px] overflow-y-auto">
+              <MarkdownRenderer content={analysis} />
             </div>
           )}
         </div>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import NewsCard from "@/components/NewsCard";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 interface NewsItem {
   title: string;
@@ -90,9 +91,7 @@ export default function NewsPage() {
           <h3 className="text-sm font-semibold text-purple-400 mb-2">
             AI要約（投資家視点）
           </h3>
-          <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
-            {aiSummary}
-          </div>
+          <MarkdownRenderer content={aiSummary} />
         </div>
       )}
 

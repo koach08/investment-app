@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { clsx } from "clsx";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 interface FredItem {
   name: string;
@@ -150,9 +151,7 @@ export default function CalendarPage() {
       {aiAnalysis && (
         <div className="border border-purple-800/50 bg-purple-950/20 rounded-lg p-4 mb-6">
           <h3 className="text-sm font-semibold text-purple-400 mb-2">AI解説</h3>
-          <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
-            {aiAnalysis}
-          </div>
+          <MarkdownRenderer content={aiAnalysis} />
         </div>
       )}
 

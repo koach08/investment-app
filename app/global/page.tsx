@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import IndexCard from "@/components/IndexCard";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 interface IndexData {
   label: string;
@@ -83,9 +84,7 @@ export default function GlobalPage() {
           <h3 className="text-sm font-semibold text-blue-400 mb-2">
             🔵 Gemini 市場サマリー
           </h3>
-          <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
-            {aiSummary}
-          </div>
+          <MarkdownRenderer content={aiSummary} />
         </div>
       )}
 

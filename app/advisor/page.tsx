@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { clsx } from "clsx";
 import TickerLink from "@/components/TickerLink";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { generateSignal, atr } from "@/lib/indicators";
 
 interface Pick {
@@ -1158,7 +1159,7 @@ export default function AdvisorPage() {
 
           {morningRawText && !morningBrief && (
             <div className="border border-zinc-800 rounded-lg p-4">
-              <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{morningRawText}</div>
+              <MarkdownRenderer content={morningRawText} />
             </div>
           )}
 
@@ -1568,9 +1569,7 @@ export default function AdvisorPage() {
 
           {rawText && !strategy && (
             <div className="border border-zinc-800 rounded-lg p-4">
-              <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
-                {rawText}
-              </div>
+              <MarkdownRenderer content={rawText} />
             </div>
           )}
 
@@ -1778,7 +1777,7 @@ export default function AdvisorPage() {
 
           {marginRawText && !marginStrategy && (
             <div className="border border-zinc-800 rounded-lg p-4">
-              <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">{marginRawText}</div>
+              <MarkdownRenderer content={marginRawText} />
             </div>
           )}
 
@@ -1800,7 +1799,7 @@ export default function AdvisorPage() {
 
       {/* ===== CHAT TAB ===== */}
       {activeTab === "chat" && (
-        <div className="flex flex-col h-[calc(100vh-200px)]">
+        <div className="flex flex-col h-[calc(100vh-240px)]">
           {/* Quick questions */}
           {messages.length === 0 && (
             <div className="mb-4">
@@ -1869,11 +1868,13 @@ export default function AdvisorPage() {
                       AI投資アドバイザー
                     </div>
                   )}
-                  <div className="whitespace-pre-wrap leading-relaxed">
-                    {msg.role === "assistant"
-                      ? renderWithTickerLinks(msg.content)
-                      : msg.content}
-                  </div>
+                  {msg.role === "assistant" ? (
+                    <MarkdownRenderer content={msg.content} />
+                  ) : (
+                    <div className="whitespace-pre-wrap leading-relaxed">
+                      {msg.content}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -2153,9 +2154,7 @@ export default function AdvisorPage() {
 
           {newsRawText && !newsAnalysis && (
             <div className="border border-zinc-800 rounded-lg p-4">
-              <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
-                {newsRawText}
-              </div>
+              <MarkdownRenderer content={newsRawText} />
             </div>
           )}
 

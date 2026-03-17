@@ -30,3 +30,12 @@ body {
   background: #3f3f46;
   border-radius: 3px;
 }
+
+/* Hide scrollbar for bottom nav */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

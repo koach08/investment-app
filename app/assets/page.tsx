@@ -58,6 +58,24 @@ interface TimelineRecord {
   debt?: number;
 }
 
+interface MFSyncData {
+  totalAssets: number;
+  totalLiabilities: number;
+  netAssets: number;
+  breakdown: { name: string; amount: number; pct: number }[];
+  performance: {
+    dayChange: number;
+    dayChangePct: number;
+    weekChange: number;
+    weekChangePct: number;
+    monthChange: number;
+    monthChangePct: number;
+    yearChange: number;
+    yearChangePct: number;
+  };
+  fetchedAt: string;
+}
+
 const ASSET_CATEGORIES: { key: keyof TimelineRecord; label: string; color: string }[] = [
   { key: "cash", label: "預金・現金", color: "#3b82f6" },
   { key: "funds", label: "投資信託", color: "#8b5cf6" },
@@ -74,7 +92,7 @@ const DIVIDENDS_KEY = "investment-app-dividends";
 const SUMMARY_KEY = "investment-app-summary";
 const TIMELINE_KEY = "investment-app-timeline";
 
-type TabKey = "overview" | "upload" | "paste" | "dividends" | "timeline" | "manual";
+type TabKey = "overview" | "sync" | "upload" | "paste" | "dividends" | "timeline" | "manual";
 
 export default function AssetsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
@@ -90,6 +108,27 @@ export default function AssetsPage() {
   // CSV upload state
   const [csvSource, setCsvSource] = useState("sbi");
   const [dragOver, setDragOver] = useState(false);
+
+  // Sync state
+  const [syncingSBI, setSyncingSBI] = useState(false);
+  const [syncingMF, setSyncingMF] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+
+  // Price refresh state
+  const [refreshingPrices, setRefreshingPrices] = useState(false);
+  const [lastPriceRefresh, setLastPriceRefresh] = useState<string | null>(null);
+
+  // MoneyForward data (performance + breakdown)
+  const [mfData, setMfData] = useState<MFSyncData | null>(null);
+
+  // Quick snapshot state
+  const [snapTotal, setSnapTotal] = useState("");
+  const [snapCash, setSnapCash] = useState("");
+  const [snapStocks, setSnapStocks] = useState("");
+  const [snapFunds, setSnapFunds] = useState("");
+  const [snapMargin, setSnapMargin] = useState("");
+  const [snapPoints, setSnapPoints] = useState("");
+  const [snapDebt, setSnapDebt] = useState("");
 
   // Paste import state
   const [pasteText, setPasteText] = useState("");
@@ -145,7 +184,19 @@ export default function AssetsPage() {
         }
       }
     };
-    loadData().then(() => { dataLoadedRef.current = true; });
+    loadData().then(() => {
+      dataLoadedRef.current = true;
+      // Auto-sync from MoneyForward if last sync > 1 hour ago or never synced
+      if (!autoSyncTriggeredRef.current) {
+        autoSyncTriggeredRef.current = true;
+        const lastSync = localStorage.getItem("investment-app-last-sync");
+        const oneHourMs = 60 * 60 * 1000;
+        if (!lastSync || Date.now() - new Date(lastSync).getTime() > oneHourMs) {
+          syncFromMF();
+        }
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Save to both localStorage and server (only after initial load completes)
@@ -174,6 +225,295 @@ export default function AssetsPage() {
     try { localStorage.setItem(TIMELINE_KEY, JSON.stringify(timeline)); } catch { /* ignore */ }
     if (timeline.length > 0) saveToServer("timeline", timeline);
   }, [timeline]);
+
+  // Load last sync time and MF data
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("investment-app-last-sync");
+      if (saved) setLastSyncTime(saved);
+    } catch { /* ignore */ }
+    try {
+      const savedMf = localStorage.getItem("investment-app-mf-data");
+      if (savedMf) setMfData(JSON.parse(savedMf));
+    } catch { /* ignore */ }
+  }, []);
+
+  // Sync from SBI
+  const syncFromSBI = async () => {
+    setSyncingSBI(true);
+    setStatusMsg("SBI証券から保有銘柄を取得中...");
+    try {
+      const res = await fetch("/api/sbi-portfolio", { method: "POST" });
+      const data = await res.json();
+      if (data.error) {
+        setStatusMsg(`SBI証券エラー: ${data.error}`);
+      } else if (data.holdings && data.holdings.length > 0) {
+        const mapped: Holding[] = data.holdings.map((h: { category: string; code: string; name: string; quantity: number; avgPrice: number; currentPrice: number; marketValue: number; pnl: number; pnlPercent: number; currency?: string }) => ({
+          source: "sbi-auto",
+          code: h.code,
+          name: h.name,
+          quantity: h.quantity,
+          avgPrice: h.avgPrice,
+          currentPrice: h.currentPrice,
+          marketValue: h.marketValue,
+          pnl: h.pnl,
+          pnlPercent: h.pnlPercent,
+          category: h.category === "domestic" ? "国内株式" : h.category === "us" ? "米国株式" : "投資信託",
+          currency: h.currency || "JPY",
+        }));
+        // Merge: replace SBI holdings, keep non-SBI holdings
+        setHoldings((prev) => {
+          const nonSBI = prev.filter((h) => h.source !== "sbi-auto" && h.source !== "sbi-csv");
+          return [...nonSBI, ...mapped];
+        });
+        const now = new Date().toISOString();
+        setLastSyncTime(now);
+        localStorage.setItem("investment-app-last-sync", now);
+        setStatusMsg(`SBI証券: ${mapped.length}銘柄を取得しました（${data.totalAssets?.toLocaleString() || ""}円）`);
+      } else {
+        setStatusMsg("SBI証券: 保有銘柄が見つかりませんでした");
+      }
+    } catch {
+      setStatusMsg("SBI証券との通信に失敗しました");
+    }
+    setSyncingSBI(false);
+  };
+
+  // Sync from MoneyForward
+  const syncFromMF = async () => {
+    setSyncingMF(true);
+    setStatusMsg("マネーフォワードから資産情報を取得中...");
+    try {
+      const res = await fetch("/api/moneyforward", { method: "POST" });
+      const data = await res.json();
+      if (data.error) {
+        setStatusMsg(`マネーフォワードエラー: ${data.error}`);
+      } else if (data.assets && data.assets.length > 0) {
+        const mapped: Holding[] = data.assets
+          .filter((a: { amount: number }) => a.amount > 0)
+          .map((a: { category: string; name: string; amount: number; currency: string }) => ({
+            source: "mf-auto",
+            code: "",
+            name: a.name,
+            quantity: 1,
+            avgPrice: 0,
+            currentPrice: a.amount,
+            marketValue: a.amount,
+            pnl: 0,
+            pnlPercent: 0,
+            category: a.category,
+            currency: a.currency || "JPY",
+          }));
+        // Merge: replace MF holdings, keep non-MF holdings
+        setHoldings((prev) => {
+          const nonMF = prev.filter((h) => h.source !== "mf-auto" && h.source !== "mf-csv");
+          return [...nonMF, ...mapped];
+        });
+
+        // Add today's entry to timeline using MF's own breakdown (from pie chart data)
+        if (data.totalAssets) {
+          const today = new Date().toISOString().substring(0, 10);
+          let cash = 0, stocks = 0, margin = 0, funds = 0, points = 0, other = 0;
+          const debt = data.totalLiabilities || 0;
+
+          // Use MF's breakdown (pie chart) - most accurate
+          if (data.breakdown && data.breakdown.length > 0) {
+            for (const b of data.breakdown) {
+              const n = (b.name || "").toLowerCase();
+              if (n.includes("預金") || n.includes("現金") || n.includes("暗号")) {
+                cash += b.amount;
+              } else if (n.includes("信用")) {
+                margin += b.amount;
+              } else if (n.includes("投資信託") || n.includes("投信")) {
+                funds += b.amount;
+              } else if (n.includes("ポイント")) {
+                points += b.amount;
+              } else if (n.includes("株式") && !n.includes("信用")) {
+                stocks += b.amount;
+              } else {
+                other += b.amount;
+              }
+            }
+          }
+
+          const total = data.totalAssets;
+          const todayRecord: TimelineRecord = { date: today, total, cash, stocks, margin, funds, points, other, debt };
+
+          setTimeline((prev) => {
+            const filtered = prev.filter((t) => t.date !== today);
+            return [...filtered, todayRecord].sort((a, b) => a.date.localeCompare(b.date));
+          });
+        }
+
+        // Save MF performance & breakdown data
+        const mfSyncData: MFSyncData = {
+          totalAssets: data.totalAssets,
+          totalLiabilities: data.totalLiabilities || 0,
+          netAssets: data.netAssets || data.totalAssets,
+          breakdown: data.breakdown || [],
+          performance: data.performance || {
+            dayChange: 0, dayChangePct: 0,
+            weekChange: 0, weekChangePct: 0,
+            monthChange: 0, monthChangePct: 0,
+            yearChange: 0, yearChangePct: 0,
+          },
+          fetchedAt: data.fetchedAt || new Date().toISOString(),
+        };
+        setMfData(mfSyncData);
+        try { localStorage.setItem("investment-app-mf-data", JSON.stringify(mfSyncData)); } catch { /* ignore */ }
+
+        const now = new Date().toISOString();
+        setLastSyncTime(now);
+        localStorage.setItem("investment-app-last-sync", now);
+        setStatusMsg(`マネーフォワード: 総資産 ¥${data.totalAssets?.toLocaleString() || "?"} を取得しました`);
+      } else {
+        setStatusMsg("マネーフォワード: 資産情報が見つかりませんでした");
+      }
+    } catch {
+      setStatusMsg("マネーフォワードとの通信に失敗しました");
+    }
+    setSyncingMF(false);
+  };
+
+  // Sync both
+  const syncAll = async () => {
+    setStatusMsg("SBI証券 + マネーフォワードから同時取得中...");
+    await Promise.all([syncFromSBI(), syncFromMF()]);
+    setStatusMsg("同期完了");
+  };
+
+  // Refresh current prices for all holdings with ticker codes
+  const refreshPrices = async () => {
+    const tickerHoldings = holdings.filter((h) => h.code && h.code.length > 0);
+    if (tickerHoldings.length === 0) {
+      setStatusMsg("価格更新対象の銘柄がありません");
+      return;
+    }
+
+    setRefreshingPrices(true);
+    setStatusMsg(`${tickerHoldings.length}銘柄の現在価格を更新中...`);
+
+    let updatedCount = 0;
+    const updatedHoldings = [...holdings];
+
+    // Batch fetch in groups of 4
+    for (let i = 0; i < tickerHoldings.length; i += 4) {
+      const batch = tickerHoldings.slice(i, i + 4);
+      const results = await Promise.all(
+        batch.map(async (h) => {
+          try {
+            const res = await fetch(`/api/market?ticker=${encodeURIComponent(h.code)}&period=1mo`);
+            const data = await res.json();
+            if (data.prices && data.prices.length > 0) {
+              const latestPrice = data.prices[data.prices.length - 1].close;
+              return { code: h.code, price: latestPrice };
+            }
+          } catch { /* skip */ }
+          return null;
+        })
+      );
+
+      for (const result of results) {
+        if (result) {
+          const idx = updatedHoldings.findIndex((h) => h.code === result.code);
+          if (idx !== -1) {
+            const h = updatedHoldings[idx];
+            const newMarketValue = result.price * h.quantity;
+            const newPnl = (result.price - h.avgPrice) * h.quantity;
+            const newPnlPercent = h.avgPrice > 0 ? ((result.price - h.avgPrice) / h.avgPrice) * 100 : 0;
+            updatedHoldings[idx] = {
+              ...h,
+              currentPrice: result.price,
+              marketValue: newMarketValue,
+              pnl: newPnl,
+              pnlPercent: newPnlPercent,
+            };
+            updatedCount++;
+          }
+        }
+      }
+    }
+
+    setHoldings(updatedHoldings);
+    const now = new Date().toISOString();
+    setLastPriceRefresh(now);
+    localStorage.setItem("investment-app-last-price-refresh", now);
+    setStatusMsg(`${updatedCount}/${tickerHoldings.length}銘柄の価格を更新しました`);
+    setRefreshingPrices(false);
+  };
+
+  // Auto-refresh prices on mount (if holdings exist and last refresh was > 1 hour ago)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("investment-app-last-price-refresh");
+      if (saved) setLastPriceRefresh(saved);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (!dataLoadedRef.current || holdings.length === 0) return;
+    const tickerHoldings = holdings.filter((h) => h.code && h.code.length > 0);
+    if (tickerHoldings.length === 0) return;
+
+    const lastRefresh = localStorage.getItem("investment-app-last-price-refresh");
+    const oneHourMs = 60 * 60 * 1000;
+    if (!lastRefresh || Date.now() - new Date(lastRefresh).getTime() > oneHourMs) {
+      refreshPrices();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdings.length]);
+
+  // Auto-sync from MoneyForward on page load (if last sync > 1 hour ago or never synced)
+  const autoSyncTriggeredRef = useRef(false);
+
+  // Build today's snapshot from current holdings and inject into timeline
+  // Timeline is shown as-is.
+  const timelineWithToday = timeline;
+
+  // Add a snapshot to timeline
+  const addSnapshot = () => {
+    const totalVal = parseFloat(snapTotal.replace(/[,、]/g, ""));
+    if (!totalVal || isNaN(totalVal)) {
+      setStatusMsg("総資産額を入力してください");
+      return;
+    }
+    const today = new Date().toISOString().substring(0, 10);
+    const parseSnap = (s: string) => parseFloat(s.replace(/[,、]/g, "")) || 0;
+
+    const cashVal = parseSnap(snapCash);
+    const stocksVal = parseSnap(snapStocks);
+    const fundsVal = parseSnap(snapFunds);
+    const marginVal = parseSnap(snapMargin);
+    const pointsVal = parseSnap(snapPoints);
+    const debtVal = parseSnap(snapDebt);
+    const otherVal = totalVal - cashVal - stocksVal - fundsVal - marginVal - pointsVal + debtVal;
+
+    const record: TimelineRecord = {
+      date: today,
+      total: totalVal,
+      cash: cashVal,
+      stocks: stocksVal,
+      funds: fundsVal,
+      margin: marginVal,
+      points: pointsVal,
+      other: otherVal > 0 ? otherVal : 0,
+      debt: debtVal,
+    };
+
+    setTimeline((prev) => {
+      const filtered = prev.filter((t) => t.date !== today);
+      return [...filtered, record].sort((a, b) => a.date.localeCompare(b.date));
+    });
+
+    setStatusMsg(`${today} のデータを追加しました（総資産: ¥${totalVal.toLocaleString()}）`);
+    setSnapTotal("");
+    setSnapCash("");
+    setSnapStocks("");
+    setSnapFunds("");
+    setSnapMargin("");
+    setSnapPoints("");
+    setSnapDebt("");
+  };
 
   // CSV upload handler - supports holdings, distributions, summary, timeline
   const handleCSVUpload = async (file: File) => {
@@ -245,8 +585,12 @@ export default function AssetsPage() {
 
   const holdingsTotal = holdings.reduce((sum, h) => sum + h.marketValue, 0);
   const manualTotal = manualAssets.reduce((sum, a) => sum + a.amount, 0);
-  const grandTotal = holdingsTotal + manualTotal;
+  const securitiesTotal = holdingsTotal + manualTotal;
   const totalPnl = holdings.reduce((sum, h) => sum + h.pnl, 0);
+
+  // Use MF data as primary source, then timeline, then securities-only
+  const latestTimeline = timelineWithToday.length > 0 ? timelineWithToday[timelineWithToday.length - 1] : null;
+  const grandTotal = mfData ? mfData.totalAssets : latestTimeline ? latestTimeline.total : securitiesTotal;
 
   const categoryTotals: Record<string, number> = {};
   holdings.forEach((h) => { categoryTotals[h.category] = (categoryTotals[h.category] || 0) + h.marketValue; });
@@ -278,10 +622,11 @@ export default function AssetsPage() {
       <div className="flex gap-1 mb-6 overflow-x-auto">
         {[
           { key: "overview", label: "資産全体" },
+          { key: "sync", label: "自動連携" },
           { key: "upload", label: "CSV取り込み" },
           { key: "paste", label: "テキスト貼付" },
           { key: "dividends", label: `配当金${dividends.length > 0 ? ` (${dividends.length})` : ""}` },
-          { key: "timeline", label: `資産推移${timeline.length > 0 ? ` (${timeline.length})` : ""}` },
+          { key: "timeline", label: `資産推移${timelineWithToday.length > 0 ? ` (${timelineWithToday.length})` : ""}` },
           { key: "manual", label: "手動入力" },
         ].map((tab) => (
           <button
@@ -300,17 +645,129 @@ export default function AssetsPage() {
       {/* ===== OVERVIEW ===== */}
       {activeTab === "overview" && (
         <div className="space-y-6">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="border border-zinc-800 rounded-lg p-4">
-              <div className="text-xs text-zinc-500">総資産</div>
-              <div className="text-xl font-bold mt-1">¥{grandTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+          {/* Sync status bar */}
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-zinc-500">
+              {syncingMF ? (
+                <span className="text-yellow-400 flex items-center gap-1.5">
+                  <span className="animate-spin inline-block w-3 h-3 border-2 border-yellow-500/30 border-t-yellow-400 rounded-full" />
+                  マネーフォワードから取得中...
+                </span>
+              ) : lastSyncTime ? (
+                `最終同期: ${new Date(lastSyncTime).toLocaleString("ja-JP")}`
+              ) : "未同期"}
+              {!syncingMF && lastPriceRefresh && (
+                <span className="ml-3">| 価格更新: {new Date(lastPriceRefresh).toLocaleString("ja-JP")}</span>
+              )}
             </div>
-            <div className={clsx("border rounded-lg p-4", totalPnl >= 0 ? "border-green-800" : "border-red-800")}>
-              <div className="text-xs text-zinc-500">含み損益（証券）</div>
-              <div className={clsx("text-xl font-bold mt-1", totalPnl >= 0 ? "text-green-400" : "text-red-400")}>
-                {totalPnl >= 0 ? "+" : ""}¥{totalPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            <div className="flex gap-2">
+              <button
+                onClick={syncFromMF}
+                disabled={syncingMF}
+                className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+              >
+                {syncingMF ? "取得中..." : "MF同期"}
+              </button>
+              <button
+                onClick={refreshPrices}
+              disabled={refreshingPrices}
+              className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+            >
+              {refreshingPrices ? (
+                <>
+                  <span className="animate-spin inline-block w-3 h-3 border-2 border-zinc-500 border-t-white rounded-full" />
+                  更新中...
+                </>
+              ) : "価格を更新"}
+              </button>
+            </div>
+          </div>
+
+          {/* Total assets + day change */}
+          <div className="border border-zinc-800 rounded-lg p-5">
+            <div className="flex items-baseline justify-between flex-wrap gap-2">
+              <div>
+                <div className="text-xs text-zinc-500 mb-1">総資産{mfData && <span className="text-emerald-500 ml-1">(MF連携)</span>}</div>
+                <div className="text-3xl font-bold">¥{grandTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+              </div>
+              {mfData && mfData.performance.dayChange !== 0 && (
+                <div className="text-right">
+                  <div className="text-xs text-zinc-500 mb-1">前日比</div>
+                  <div className={clsx("text-xl font-bold", mfData.performance.dayChange >= 0 ? "text-green-400" : "text-red-400")}>
+                    {mfData.performance.dayChange >= 0 ? "+" : ""}¥{mfData.performance.dayChange.toLocaleString()}
+                  </div>
+                  <div className={clsx("text-sm", mfData.performance.dayChangePct >= 0 ? "text-green-500" : "text-red-500")}>
+                    {mfData.performance.dayChangePct >= 0 ? "+" : ""}{mfData.performance.dayChangePct.toFixed(1)}%
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Performance period cards (from MF) */}
+          {mfData && (mfData.performance.weekChange !== 0 || mfData.performance.monthChange !== 0 || mfData.performance.yearChange !== 0) && (
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: "今週", amt: mfData.performance.weekChange, pct: mfData.performance.weekChangePct },
+                { label: "今月", amt: mfData.performance.monthChange, pct: mfData.performance.monthChangePct },
+                { label: "今年", amt: mfData.performance.yearChange, pct: mfData.performance.yearChangePct },
+              ].map((p) => (
+                <div key={p.label} className={clsx("border rounded-lg p-3", p.amt >= 0 ? "border-green-800/50" : "border-red-800/50")}>
+                  <div className="text-xs text-zinc-500">{p.label}</div>
+                  <div className={clsx("text-lg font-bold mt-1", p.amt >= 0 ? "text-green-400" : "text-red-400")}>
+                    {p.pct >= 0 ? "+" : ""}{p.pct.toFixed(1)}%
+                  </div>
+                  <div className={clsx("text-xs", p.amt >= 0 ? "text-green-600" : "text-red-600")}>
+                    {p.amt >= 0 ? "+" : ""}¥{p.amt.toLocaleString()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* MF breakdown (pie chart categories) */}
+          {mfData && mfData.breakdown.length > 0 && (
+            <div className="border border-zinc-800 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-zinc-400 mb-3">資産内訳（マネーフォワード）</h3>
+              <div className="space-y-2">
+                {mfData.breakdown.map((b) => {
+                  const pct = mfData.totalAssets > 0 ? (b.amount / mfData.totalAssets) * 100 : 0;
+                  return (
+                    <div key={b.name} className="flex items-center gap-3">
+                      <span className="text-sm w-44 text-zinc-400 truncate">{b.name}</span>
+                      <div className="flex-1 h-4 bg-zinc-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500/60 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-sm font-mono w-28 text-right">¥{b.amount.toLocaleString()}</span>
+                      <span className="text-xs text-zinc-500 w-14 text-right">{pct.toFixed(1)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+              {mfData.totalLiabilities > 0 && (
+                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-zinc-800">
+                  <span className="text-sm w-44 text-red-400">負債（カード等）</span>
+                  <div className="flex-1" />
+                  <span className="text-sm font-mono w-28 text-right text-red-400">-¥{mfData.totalLiabilities.toLocaleString()}</span>
+                  <span className="text-xs text-zinc-500 w-14" />
+                </div>
+              )}
+              <div className="text-xs text-zinc-600 mt-2">
+                取得: {new Date(mfData.fetchedAt).toLocaleString("ja-JP")}
               </div>
             </div>
+          )}
+
+          {/* Securities stats (from CSV data) */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {holdings.length > 0 && (
+              <div className={clsx("border rounded-lg p-4", totalPnl >= 0 ? "border-green-800" : "border-red-800")}>
+                <div className="text-xs text-zinc-500">含み損益（証券）</div>
+                <div className={clsx("text-xl font-bold mt-1", totalPnl >= 0 ? "text-green-400" : "text-red-400")}>
+                  {totalPnl >= 0 ? "+" : ""}¥{totalPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </div>
+              </div>
+            )}
             {summary.length > 0 && (
               <div className={clsx("border rounded-lg p-4", (summary[0]?.totalReturn || 0) >= 0 ? "border-green-800" : "border-red-800")}>
                 <div className="text-xs text-zinc-500">トータルリターン</div>
@@ -458,6 +915,102 @@ export default function AssetsPage() {
               <p className="text-sm mt-2">「CSV取り込み」または「手動入力」タブからデータを追加してください</p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ===== AUTO SYNC ===== */}
+      {activeTab === "sync" && (
+        <div className="space-y-6">
+          <div className="border border-zinc-800 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-zinc-400 mb-2">自動連携について</h3>
+            <p className="text-sm text-zinc-300 leading-relaxed">
+              SBI証券・マネーフォワードのログイン情報が <code className="text-cyan-400">.env.local</code> に設定されていれば、
+              ボタン1つで最新の保有銘柄・資産情報を自動取得します。
+            </p>
+            {lastSyncTime && (
+              <p className="text-xs text-zinc-500 mt-2">
+                最終同期: {new Date(lastSyncTime).toLocaleString("ja-JP")}
+              </p>
+            )}
+          </div>
+
+          {/* Sync all button */}
+          <button
+            onClick={syncAll}
+            disabled={syncingSBI || syncingMF}
+            className="w-full py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 disabled:opacity-50 rounded-lg text-sm font-bold transition-all"
+          >
+            {syncingSBI || syncingMF ? "同期中..." : "SBI + マネーフォワード 一括同期"}
+          </button>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* SBI Card */}
+            <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/50">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center text-xl">S</div>
+                <div>
+                  <h4 className="font-semibold">SBI証券</h4>
+                  <p className="text-xs text-zinc-500">保有銘柄・残高を取得</p>
+                </div>
+              </div>
+              <p className="text-xs text-zinc-400 mb-4">
+                必要な環境変数: <code className="text-cyan-400">SBI_USER_ID</code>, <code className="text-cyan-400">SBI_PASSWORD</code>
+              </p>
+              <button
+                onClick={syncFromSBI}
+                disabled={syncingSBI}
+                className="w-full py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+              >
+                {syncingSBI ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="animate-spin inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
+                    取得中...
+                  </span>
+                ) : "SBI証券から取得"}
+              </button>
+            </div>
+
+            {/* MoneyForward Card */}
+            <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/50">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-lg bg-green-600/20 flex items-center justify-center text-xl">M</div>
+                <div>
+                  <h4 className="font-semibold">マネーフォワード</h4>
+                  <p className="text-xs text-zinc-500">資産全体を取得</p>
+                </div>
+              </div>
+              <p className="text-xs text-zinc-400 mb-4">
+                必要な環境変数: <code className="text-cyan-400">MF_EMAIL</code>, <code className="text-cyan-400">MF_PASSWORD</code>
+              </p>
+              <button
+                onClick={syncFromMF}
+                disabled={syncingMF}
+                className="w-full py-2 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+              >
+                {syncingMF ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="animate-spin inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
+                    取得中...
+                  </span>
+                ) : "マネーフォワードから取得"}
+              </button>
+            </div>
+          </div>
+
+          {/* Setup guide */}
+          <div className="border border-zinc-800 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-zinc-400 mb-3">環境変数の設定方法</h3>
+            <div className="bg-zinc-950 rounded p-3 font-mono text-xs text-zinc-300 leading-relaxed">
+              <div className="text-zinc-500 mb-1"># .env.local に以下を追加</div>
+              <div><span className="text-cyan-400">SBI_USER_ID</span>=あなたのSBIユーザーID</div>
+              <div><span className="text-cyan-400">SBI_PASSWORD</span>=あなたのSBIパスワード</div>
+              <div className="mt-2"><span className="text-cyan-400">MF_EMAIL</span>=マネフォのメールアドレス</div>
+              <div><span className="text-cyan-400">MF_PASSWORD</span>=マネフォのパスワード</div>
+            </div>
+            <p className="text-xs text-zinc-500 mt-2">
+              ※ 認証情報はサーバーサイドでのみ使用され、ブラウザには送信されません。Playwrightによるスクレイピングで取得します。
+            </p>
+          </div>
         </div>
       )}
 
@@ -734,17 +1287,125 @@ export default function AssetsPage() {
       {/* ===== TIMELINE ===== */}
       {activeTab === "timeline" && (
         <div className="space-y-6">
-          {timeline.length === 0 ? (
+          {/* Quick snapshot form */}
+          <div className="border border-purple-800/30 bg-purple-950/10 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-purple-400 mb-3">今日のデータを追加</h3>
+            <p className="text-xs text-zinc-400 mb-3">マネーフォワードの画面から数字をコピペするだけ。総資産だけでもOK。</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+              <div>
+                <label className="text-xs text-zinc-500">総資産（必須）</label>
+                <input
+                  type="text"
+                  value={snapTotal}
+                  onChange={(e) => setSnapTotal(e.target.value)}
+                  placeholder="24,431,422"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500">預金・現金</label>
+                <input
+                  type="text"
+                  value={snapCash}
+                  onChange={(e) => setSnapCash(e.target.value)}
+                  placeholder="6,369,294"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500">株式（現物）</label>
+                <input
+                  type="text"
+                  value={snapStocks}
+                  onChange={(e) => setSnapStocks(e.target.value)}
+                  placeholder="6,763,745"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:border-green-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500">投資信託</label>
+                <input
+                  type="text"
+                  value={snapFunds}
+                  onChange={(e) => setSnapFunds(e.target.value)}
+                  placeholder="10,018,128"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500">信用</label>
+                <input
+                  type="text"
+                  value={snapMargin}
+                  onChange={(e) => setSnapMargin(e.target.value)}
+                  placeholder="18,976"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:border-yellow-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500">ポイント</label>
+                <input
+                  type="text"
+                  value={snapPoints}
+                  onChange={(e) => setSnapPoints(e.target.value)}
+                  placeholder="470,657"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500">負債（カード等）</label>
+                <input
+                  type="text"
+                  value={snapDebt}
+                  onChange={(e) => setSnapDebt(e.target.value)}
+                  placeholder="0"
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:border-red-500 focus:outline-none"
+                />
+              </div>
+              <div className="flex items-end">
+                <button
+                  onClick={addSnapshot}
+                  className="w-full py-2 bg-purple-600 hover:bg-purple-500 rounded text-sm font-medium transition-colors"
+                >
+                  追加
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {timelineWithToday.length === 0 ? (
             <div className="text-center text-zinc-500 mt-12">
               <p className="text-lg">資産推移データがありません</p>
-              <p className="text-sm mt-2">「CSV取り込み」タブからマネーフォワードの資産推移CSVを取り込んでください</p>
+              <p className="text-sm mt-2">上のフォームから今日の総資産額を入力するか、CSVを取り込んでください</p>
             </div>
           ) : (
             <>
+              {/* Price refresh bar */}
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-zinc-500">
+                  {lastPriceRefresh
+                    ? `最終価格更新: ${new Date(lastPriceRefresh).toLocaleString("ja-JP")}`
+                    : ""}
+                  {holdings.length > 0 && <span className="ml-2 text-emerald-500">（今日のデータは保有銘柄の最新価格から自動算出）</span>}
+                </div>
+                <button
+                  onClick={refreshPrices}
+                  disabled={refreshingPrices}
+                  className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+                >
+                  {refreshingPrices ? (
+                    <>
+                      <span className="animate-spin inline-block w-3 h-3 border-2 border-zinc-500 border-t-white rounded-full" />
+                      更新中...
+                    </>
+                  ) : "価格を更新"}
+                </button>
+              </div>
+
               {/* Current vs Start */}
               {(() => {
-                const latest = timeline[timeline.length - 1];
-                const first = timeline[0];
+                const latest = timelineWithToday[timelineWithToday.length - 1];
+                const first = timelineWithToday[0];
                 const change = latest.total - first.total;
                 const changePct = first.total > 0 ? (change / first.total) * 100 : 0;
                 return (
@@ -774,7 +1435,7 @@ export default function AssetsPage() {
 
               {/* Category breakdown cards */}
               {(() => {
-                const latest = timeline[timeline.length - 1];
+                const latest = timelineWithToday[timelineWithToday.length - 1];
                 const cats = ASSET_CATEGORIES.filter((c) => {
                   const v = Number(latest[c.key] || 0);
                   return v !== 0;
@@ -783,7 +1444,7 @@ export default function AssetsPage() {
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                     {cats.map((c) => {
                       const v = Number(latest[c.key] || 0);
-                      const pct = latest.total > 0 ? (v / latest.total) * 100 : 0;
+                      const pct = latest.total > 0 ? (Math.abs(v) / latest.total) * 100 : 0;
                       const isDebt = c.key === "debt";
                       return (
                         <div key={c.key} className="border border-zinc-800 rounded-lg p-3 relative overflow-hidden">
@@ -793,8 +1454,8 @@ export default function AssetsPage() {
                               <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: c.color }} />
                               {c.label}
                             </div>
-                            <div className={clsx("text-lg font-bold mt-1", isDebt ? "text-red-400" : "text-white")}>
-                              {isDebt ? "-" : ""}¥{Math.abs(v).toLocaleString()}
+                            <div className={clsx("text-lg font-bold mt-1", isDebt ? "text-red-400" : v < 0 ? "text-red-400" : "text-white")}>
+                              {v < 0 ? "-" : isDebt ? "-" : ""}¥{Math.abs(v).toLocaleString()}
                             </div>
                             <div className="text-xs text-zinc-500">{pct.toFixed(1)}%</div>
                           </div>
@@ -810,13 +1471,13 @@ export default function AssetsPage() {
                 {/* Donut */}
                 <div className="border border-zinc-800 rounded-lg p-4">
                   <h3 className="text-sm font-semibold text-zinc-400 mb-3">資産内訳</h3>
-                  <DonutChart data={timeline[timeline.length - 1]} />
+                  <DonutChart data={timelineWithToday[timelineWithToday.length - 1]} />
                 </div>
 
                 {/* Stacked area chart */}
                 <div className="border border-zinc-800 rounded-lg p-4">
                   <h3 className="text-sm font-semibold text-zinc-400 mb-3">資産推移グラフ</h3>
-                  <StackedAreaChart data={timeline} />
+                  <StackedAreaChart data={timelineWithToday} />
                 </div>
               </div>
 
@@ -837,12 +1498,10 @@ export default function AssetsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {/* Show monthly data (last entry per month) */}
                       {(() => {
                         const monthly: TimelineRecord[] = [];
                         let lastMonth = "";
-                        // timeline is sorted ascending, show most recent first
-                        const reversed = [...timeline].reverse();
+                        const reversed = [...timelineWithToday].reverse();
                         for (const t of reversed) {
                           const month = t.date.substring(0, 7);
                           if (month !== lastMonth) {
@@ -850,14 +1509,23 @@ export default function AssetsPage() {
                             lastMonth = month;
                           }
                         }
+                        const today = new Date().toISOString().substring(0, 10);
                         return monthly.slice(0, 24).map((t) => (
-                          <tr key={t.date} className="border-b border-zinc-800/50 hover:bg-zinc-900">
-                            <td className="py-1.5 px-2 font-mono text-zinc-400">{t.date}</td>
+                          <tr key={t.date} className={clsx(
+                            "border-b border-zinc-800/50 hover:bg-zinc-900",
+                            t.date === today && "bg-purple-950/20"
+                          )}>
+                            <td className="py-1.5 px-2 font-mono text-zinc-400">
+                              {t.date}
+                              {t.date === today && <span className="ml-1 text-purple-400 text-xs">（今日）</span>}
+                            </td>
                             <td className="py-1.5 px-2 text-right font-mono font-bold">¥{t.total.toLocaleString()}</td>
                             <td className="py-1.5 px-2 text-right font-mono text-zinc-400">¥{t.cash.toLocaleString()}</td>
                             <td className="py-1.5 px-2 text-right font-mono text-blue-400">¥{t.stocks.toLocaleString()}</td>
                             <td className="py-1.5 px-2 text-right font-mono text-green-400">¥{t.funds.toLocaleString()}</td>
-                            <td className="py-1.5 px-2 text-right font-mono text-zinc-500">¥{t.margin.toLocaleString()}</td>
+                            <td className={clsx("py-1.5 px-2 text-right font-mono", t.margin < 0 ? "text-red-400" : "text-zinc-500")}>
+                              {t.margin < 0 ? "-" : ""}¥{Math.abs(t.margin).toLocaleString()}
+                            </td>
                             <td className="py-1.5 px-2 text-right font-mono text-zinc-500">¥{t.points.toLocaleString()}</td>
                           </tr>
                         ));

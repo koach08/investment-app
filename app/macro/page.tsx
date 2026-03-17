@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { clsx } from "clsx";
+import MarkdownRenderer from "@/components/MarkdownRenderer";
 
 interface IndexData {
   label: string;
@@ -323,9 +324,7 @@ export default function MacroPage() {
               <h3 className="text-sm font-semibold text-purple-400 mb-2">
                 AIマクロ分析
               </h3>
-              <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
-                {aiAnalysis}
-              </div>
+              <MarkdownRenderer content={aiAnalysis} />
             </div>
           )}
         </>
