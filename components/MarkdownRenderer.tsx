@@ -48,15 +48,37 @@ const components: Components = {
       {children}
     </blockquote>
   ),
+  // Render code blocks as normal text instead of code-styled blocks.
+  // AI responses often contain data/JSON wrapped in code fences — displaying
+  // them as "code" makes the content hard to read at a glance.
   code: ({ className, children }) => {
     const isBlock = className?.includes("language-");
     if (isBlock) {
+      // Block code that slipped through cleaning — render as plain text
+      const text = String(children).trim();
+      // Try to parse as JSON and convert
+      try {
+        const obj = JSON.parse(text);
+        if (typeof obj === "object" && obj !== null) {
+          const md = jsonToMarkdown(obj);
+          return (
+            <span className="block text-sm text-zinc-300 leading-relaxed">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={inlineComponents}>
+                {md}
+              </ReactMarkdown>
+            </span>
+          );
+        }
+      } catch {
+        // Not JSON — render as plain readable text
+      }
       return (
-        <code className="block bg-zinc-900 border border-zinc-700 rounded-md p-3 my-2 text-xs text-zinc-300 overflow-x-auto whitespace-pre">
+        <span className="block text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">
           {children}
-        </code>
+        </span>
       );
     }
+    // Inline code — keep subtle styling
     return (
       <code className="bg-zinc-800 text-purple-300 rounded px-1.5 py-0.5 text-xs">
         {children}
@@ -92,6 +114,14 @@ const components: Components = {
     >
       {children}
     </a>
+  ),
+};
+
+// Simplified components for nested rendering (avoids infinite recursion)
+const inlineComponents: Components = {
+  ...components,
+  code: ({ children }) => (
+    <span className="text-sm text-zinc-300">{children}</span>
   ),
 };
 
@@ -151,6 +181,49 @@ const KEY_LABELS: Record<string, string> = {
   reasoning: "推論",
   hot: "HOT",
   cold: "COLD",
+  marketVerdict: "市場判定",
+  marginBuyCandidates: "信用買い候補",
+  shortSellCandidates: "空売り候補",
+  existingPositionReview: "既存ポジション管理",
+  noTradeReason: "トレード見送り理由",
+  weeklyOutlook: "週間アウトルック",
+  affectedSectors: "影響セクター",
+  affectedTickers: "影響銘柄",
+  holdingsImpact: "保有銘柄への影響",
+  competitiveImpact: "競争影響",
+  supplyChainImpact: "サプライチェーン影響",
+  macroImplication: "マクロ影響",
+  sectorRotation: "セクターローテーション",
+  timeHorizon: "時間軸",
+  winners: "勝者",
+  losers: "敗者",
+  immediate: "即座",
+  shortTerm_action: "短期アクション",
+  mediumTerm: "中期アクション",
+  date: "日付",
+  event: "イベント",
+  impact: "インパクト",
+  move: "変動",
+  alert: "アラート",
+  type: "タイプ",
+  entry: "エントリー",
+  target: "ターゲット",
+  stop: "ストップ",
+  conviction: "確信度",
+  yieldCurve: "イールドカーブ",
+  dollarYen: "ドル円",
+  vix: "VIX",
+  fedExpectation: "FRB期待",
+  overallRisk: "全体リスク",
+  topRisks: "主要リスク",
+  blackSwan: "テールリスク",
+  sectorConcentration: "セクター集中度",
+  topRisk: "最大リスク",
+  driftAlert: "ドリフト警告",
+  rebalanceActions: "リバランス提案",
+  thesisStatus: "テーゼ状態",
+  urgency: "緊急度",
+  targetAction: "目標アクション",
 };
 
 function labelForKey(key: string): string {
@@ -210,6 +283,55 @@ function jsonToMarkdown(obj: any, depth = 0): string {
   return lines.join("\n");
 }
 
+/**
+ * Try to extract and convert JSON from raw text.
+ * Handles cases like: "Here is the analysis:\n```json\n{...}\n```\nLet me know..."
+ */
+function extractAndConvertJson(text: string): string | null {
+  // Try to find the outermost JSON object
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const candidate = text.slice(start, end + 1);
+    try {
+      const obj = JSON.parse(candidate);
+      if (typeof obj === "object" && obj !== null) {
+        // Preserve any non-JSON text before/after the JSON as context
+        const before = text.slice(0, start).trim();
+        const after = text.slice(end + 1).trim();
+        const parts: string[] = [];
+        if (before) parts.push(before);
+        parts.push(jsonToMarkdown(obj));
+        if (after) parts.push(after);
+        return parts.join("\n\n");
+      }
+    } catch {
+      // Not valid JSON
+    }
+  }
+  // Try array
+  const arrStart = text.indexOf("[");
+  const arrEnd = text.lastIndexOf("]");
+  if (arrStart !== -1 && arrEnd > arrStart) {
+    const candidate = text.slice(arrStart, arrEnd + 1);
+    try {
+      const arr = JSON.parse(candidate);
+      if (Array.isArray(arr)) {
+        const before = text.slice(0, arrStart).trim();
+        const after = text.slice(arrEnd + 1).trim();
+        const parts: string[] = [];
+        if (before) parts.push(before);
+        parts.push(jsonToMarkdown(arr));
+        if (after) parts.push(after);
+        return parts.join("\n\n");
+      }
+    } catch {
+      // Not valid JSON
+    }
+  }
+  return null;
+}
+
 export default function MarkdownRenderer({
   content,
   className = "",
@@ -217,13 +339,37 @@ export default function MarkdownRenderer({
   content: string;
   className?: string;
 }) {
-  // Strip all JSON/code fences
-  let cleaned = content
-    .replace(/^```(?:json)?\s*\n?/i, "")
-    .replace(/\n?```\s*$/i, "")
-    .trim();
+  // Step 1: Strip ALL code fences (any language tag) and try to convert inner JSON
+  let cleaned = content;
 
-  // If the entire content looks like raw JSON, convert to readable markdown
+  // Strip all fenced code blocks: ```<lang>\n...\n``` or ```\n...\n```
+  cleaned = cleaned.replace(/```[\w]*\s*\n([\s\S]*?)```/g, (_match, inner) => {
+    const trimmed = (inner as string).trim();
+    // Try to parse as JSON and convert
+    try {
+      const obj = JSON.parse(trimmed);
+      if (typeof obj === "object" && obj !== null) {
+        return "\n" + jsonToMarkdown(obj) + "\n";
+      }
+    } catch {
+      // Not JSON — return as plain text (no code formatting)
+    }
+    return "\n" + trimmed + "\n";
+  });
+
+  // Also handle code fences that might be on the same line: ```json{...}```
+  cleaned = cleaned.replace(/```[\w]*\s*(\{[\s\S]*?\})\s*```/g, (_match, inner) => {
+    try {
+      const obj = JSON.parse((inner as string).trim());
+      return "\n" + jsonToMarkdown(obj) + "\n";
+    } catch {
+      return "\n" + (inner as string).trim() + "\n";
+    }
+  });
+
+  cleaned = cleaned.trim();
+
+  // Step 2: If the entire content looks like raw JSON, convert to readable markdown
   if (
     (cleaned.startsWith("{") && cleaned.endsWith("}")) ||
     (cleaned.startsWith("[") && cleaned.endsWith("]"))
@@ -232,24 +378,19 @@ export default function MarkdownRenderer({
       const obj = JSON.parse(cleaned);
       cleaned = jsonToMarkdown(obj);
     } catch {
-      // Not valid JSON, continue with the original
+      // Try extracting JSON from within the text
+      const extracted = extractAndConvertJson(cleaned);
+      if (extracted) cleaned = extracted;
     }
   }
 
-  // Strip remaining ```json ... ``` blocks and just keep the inner content as markdown
-  cleaned = cleaned.replace(/```json\s*\n([\s\S]*?)```/g, (_match, inner) => {
-    // Try to parse and convert the inner JSON to readable text
-    const trimmed = inner.trim();
-    try {
-      const obj = JSON.parse(trimmed);
-      return jsonToMarkdown(obj);
-    } catch {
-      return trimmed;
-    }
-  });
-
-  // Strip any remaining bare code fences
-  cleaned = cleaned.replace(/```\s*\n([\s\S]*?)```/g, "$1");
+  // Step 3: If there's still embedded JSON (mixed text + JSON), try to extract it
+  if (cleaned.includes('"marketOverview"') || cleaned.includes('"oneLineCall"') ||
+      cleaned.includes('"strategies"') || cleaned.includes('"riskLevel"') ||
+      cleaned.includes('"sentiment"') || cleaned.includes('"marketVerdict"')) {
+    const extracted = extractAndConvertJson(cleaned);
+    if (extracted) cleaned = extracted;
+  }
 
   return (
     <div className={`markdown-body ${className}`}>

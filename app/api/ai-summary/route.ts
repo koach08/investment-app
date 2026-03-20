@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const { indices, news, fredData, tickerData, type } = body;
 
-  let systemPrompt = "あなたは機関投資家レベルの投資分析エキスパートだ。日本語で簡潔かつ具体的に分析結果を返す。曖昧な表現は禁止。数値と根拠を必ず示す。";
+  let systemPrompt = "あなたは機関投資家レベルの投資分析エキスパートだ。日本語で簡潔かつ具体的に分析結果を返す。曖昧な表現は禁止。数値と根拠を必ず示す。回答はMarkdown形式で返すこと。コードブロック（```）で囲まないこと。見出し・箇条書き・太字等を直接使え。";
   let userPrompt = "";
 
   switch (type) {

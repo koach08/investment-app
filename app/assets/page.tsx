@@ -118,6 +118,13 @@ export default function AssetsPage() {
   const [refreshingPrices, setRefreshingPrices] = useState(false);
   const [lastPriceRefresh, setLastPriceRefresh] = useState<string | null>(null);
 
+  // Metals price state
+  const [metalsData, setMetalsData] = useState<{
+    metals: { key: string; nameJa: string; priceJpyPerGram: number | null; priceUsd: number | null }[];
+    usdjpy: number;
+    fetchedAt: string;
+  } | null>(null);
+
   // MoneyForward data (performance + breakdown)
   const [mfData, setMfData] = useState<MFSyncData | null>(null);
 
@@ -226,7 +233,7 @@ export default function AssetsPage() {
     if (timeline.length > 0) saveToServer("timeline", timeline);
   }, [timeline]);
 
-  // Load last sync time and MF data
+  // Load last sync time, MF data, and metals data
   useEffect(() => {
     try {
       const saved = localStorage.getItem("investment-app-last-sync");
@@ -236,6 +243,13 @@ export default function AssetsPage() {
       const savedMf = localStorage.getItem("investment-app-mf-data");
       if (savedMf) setMfData(JSON.parse(savedMf));
     } catch { /* ignore */ }
+    try {
+      const savedMetals = localStorage.getItem("investment-app-metals-data");
+      if (savedMetals) setMetalsData(JSON.parse(savedMetals));
+    } catch { /* ignore */ }
+    // Fetch fresh metals prices on mount
+    fetchMetalsPrices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Sync from SBI
@@ -383,20 +397,38 @@ export default function AssetsPage() {
   };
 
   // Refresh current prices for all holdings with ticker codes
+  // Fetch metals spot prices
+  const fetchMetalsPrices = async () => {
+    try {
+      const res = await fetch("/api/metals-price");
+      const data = await res.json();
+      if (!data.error) {
+        setMetalsData(data);
+        localStorage.setItem("investment-app-metals-data", JSON.stringify(data));
+      }
+      return data;
+    } catch { return null; }
+  };
+
   const refreshPrices = async () => {
     const tickerHoldings = holdings.filter((h) => h.code && h.code.length > 0);
-    if (tickerHoldings.length === 0) {
+    const hasMetals = holdings.some((h) => h.source === "sbi-metals" || h.category === "金・貴金属");
+
+    if (tickerHoldings.length === 0 && !hasMetals) {
       setStatusMsg("価格更新対象の銘柄がありません");
       return;
     }
 
     setRefreshingPrices(true);
-    setStatusMsg(`${tickerHoldings.length}銘柄の現在価格を更新中...`);
+    setStatusMsg(`価格を更新中...`);
 
     let updatedCount = 0;
     const updatedHoldings = [...holdings];
 
-    // Batch fetch in groups of 4
+    // Fetch metals prices in parallel with stock prices
+    const metalsPromise = hasMetals ? fetchMetalsPrices() : Promise.resolve(null);
+
+    // Batch fetch stock prices in groups of 4
     for (let i = 0; i < tickerHoldings.length; i += 4) {
       const batch = tickerHoldings.slice(i, i + 4);
       const results = await Promise.all(
@@ -434,11 +466,17 @@ export default function AssetsPage() {
       }
     }
 
+    // Also fetch metals spot prices (even if no metals holdings, for display)
+    await metalsPromise;
+
     setHoldings(updatedHoldings);
     const now = new Date().toISOString();
     setLastPriceRefresh(now);
     localStorage.setItem("investment-app-last-price-refresh", now);
-    setStatusMsg(`${updatedCount}/${tickerHoldings.length}銘柄の価格を更新しました`);
+    const parts = [];
+    if (tickerHoldings.length > 0) parts.push(`${updatedCount}/${tickerHoldings.length}銘柄`);
+    if (hasMetals) parts.push("貴金属スポット価格");
+    setStatusMsg(`${parts.join(" + ")} を更新しました`);
     setRefreshingPrices(false);
   };
 
@@ -754,6 +792,34 @@ export default function AssetsPage() {
               )}
               <div className="text-xs text-zinc-600 mt-2">
                 取得: {new Date(mfData.fetchedAt).toLocaleString("ja-JP")}
+              </div>
+            </div>
+          )}
+
+          {/* Precious metals spot prices */}
+          {metalsData && metalsData.metals.length > 0 && (
+            <div className="border border-yellow-800/40 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-yellow-400">貴金属スポット価格</h3>
+                <span className="text-xs text-zinc-500">
+                  {metalsData.fetchedAt ? new Date(metalsData.fetchedAt).toLocaleString("ja-JP") : ""}
+                  {metalsData.usdjpy && <span className="ml-2">USD/JPY: {metalsData.usdjpy}</span>}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                {metalsData.metals.map((m) => (
+                  <div key={m.key} className="bg-zinc-900 rounded-lg p-3 text-center">
+                    <div className="text-xs text-zinc-500 mb-1">{m.nameJa}</div>
+                    {m.priceJpyPerGram !== null ? (
+                      <>
+                        <div className="text-lg font-bold text-yellow-300">¥{m.priceJpyPerGram.toLocaleString()}<span className="text-xs text-zinc-500">/g</span></div>
+                        <div className="text-xs text-zinc-500 mt-0.5">${m.priceUsd?.toLocaleString()}/oz</div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-zinc-600">取得失敗</div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}

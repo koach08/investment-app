@@ -89,7 +89,8 @@ ${holdingsInfo}
 ## 現在の市場コンテキスト
 ${context ? JSON.stringify({ indices: context.indices, fredData: context.fredData, news: context.news }, null, 2) : "コンテキストなし"}
 
-回答は簡潔かつ具体的に。必要に応じて箇条書きやテーブルを使え。`;
+回答は簡潔かつ具体的に。必要に応じて箇条書きやテーブルを使え。
+回答はMarkdown形式で返すこと。JSONやコードブロック（\`\`\`）で囲まないこと。見出し、箇条書き、太字等のMarkdown記法を直接使え。`;
 
   try {
     const client = new Anthropic({ apiKey });
