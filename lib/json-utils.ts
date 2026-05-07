@@ -82,6 +82,13 @@ export function robustJsonParse<T = unknown>(text: string): T | null {
     } catch { /* continue */ }
   }
 
+  // Strategy 5: Doubled-brace prefix from broken assistant prefill ({{ "key": ... }})
+  if (cleaned.startsWith("{{")) {
+    try {
+      return JSON.parse(cleaned.slice(1)) as T;
+    } catch { /* continue */ }
+  }
+
   return null;
 }
 

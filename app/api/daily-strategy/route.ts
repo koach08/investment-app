@@ -310,7 +310,10 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
     });
 
     const rawOut = message.content.find((b) => b.type === "text")?.text || "";
-    const text = "{" + rawOut;
+    // AIが先頭の { を省く挙動（assistant prefillパターンの名残）と
+    // 自前で { から返す挙動の両方に対応
+    const trimmed = rawOut.trim();
+    const text = trimmed.startsWith("{") || trimmed.startsWith("```") ? rawOut : "{" + rawOut;
 
     const parsed = robustJsonParse(text);
     if (parsed) {
