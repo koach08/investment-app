@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { HEAVY } from "@/lib/model-config";
 import { robustJsonParse } from "@/lib/json-utils";
+import { normalizeAiJsonPrefix } from "@/lib/ai-prefix";
 
 interface HoldingInput {
   code?: string;
@@ -119,7 +120,7 @@ ${holdingsContext}
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
       model: HEAVY.claude,
-      max_tokens: 4000,
+      max_tokens: 8000,
       messages: [
         { role: "user", content: prompt },
       ],
@@ -138,7 +139,7 @@ ${holdingsContext}
     });
 
     const rawOut = message.content.find((b) => b.type === "text")?.text || "";
-    const text = "{" + rawOut;
+    const text = normalizeAiJsonPrefix(rawOut);
 
     const parsed = robustJsonParse(text);
     if (parsed) {

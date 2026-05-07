@@ -101,7 +101,7 @@ export const HEAVY = getModels("HEAVY");
 // ── Max Tokens プリセット ───────────────────────────────────────
 
 export const MAX_TOKENS = {
-  LIGHT: 1000,
-  STANDARD: 4000,
-  HEAVY: 8000,
+  LIGHT: 1500,
+  STANDARD: 6000,
+  HEAVY: 16000,
 } as const;

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { STANDARD } from "@/lib/model-config";
 import { robustJsonParse } from "@/lib/json-utils";
+import { normalizeAiJsonPrefix } from "@/lib/ai-prefix";
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -82,7 +83,7 @@ ${text.slice(0, 5000)}
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
       model: STANDARD.claude,
-      max_tokens: 3000,
+      max_tokens: 5000,
       messages: [
         { role: "user", content: prompt },
       ],
@@ -97,7 +98,7 @@ ${text.slice(0, 5000)}
     });
 
     const rawOut = message.content.find((b) => b.type === "text")?.text || "";
-    const responseText = "{" + rawOut;
+    const responseText = normalizeAiJsonPrefix(rawOut);
 
     const parsed = robustJsonParse(responseText);
     if (parsed) {

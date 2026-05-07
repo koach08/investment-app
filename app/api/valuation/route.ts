@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { STANDARD } from "@/lib/model-config";
 import { robustJsonParse } from "@/lib/json-utils";
+import { normalizeAiJsonPrefix } from "@/lib/ai-prefix";
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -113,7 +114,7 @@ ${peers ? `- 比較銘柄: ${JSON.stringify(peers)}` : ""}
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
       model: STANDARD.claude,
-      max_tokens: 4000,
+      max_tokens: 8000,
       messages: [
         { role: "user", content: prompt },
       ],
@@ -130,7 +131,7 @@ ${peers ? `- 比較銘柄: ${JSON.stringify(peers)}` : ""}
     });
 
     const rawOut = message.content.find((b) => b.type === "text")?.text || "";
-    const text = "{" + rawOut;
+    const text = normalizeAiJsonPrefix(rawOut);
 
     const parsed = robustJsonParse(text);
     if (parsed) {

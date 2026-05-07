@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { HEAVY } from "@/lib/model-config";
 import { robustJsonParse } from "@/lib/json-utils";
+import { normalizeAiJsonPrefix } from "@/lib/ai-prefix";
 
 interface HoldingInput {
   code?: string;
@@ -293,7 +294,7 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
       model: HEAVY.claude,
-      max_tokens: 8000,
+      max_tokens: 16000,
       messages: [
         { role: "user", content: prompt },
       ],
@@ -310,10 +311,7 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
     });
 
     const rawOut = message.content.find((b) => b.type === "text")?.text || "";
-    // AIが先頭の { を省く挙動（assistant prefillパターンの名残）と
-    // 自前で { から返す挙動の両方に対応
-    const trimmed = rawOut.trim();
-    const text = trimmed.startsWith("{") || trimmed.startsWith("```") ? rawOut : "{" + rawOut;
+    const text = normalizeAiJsonPrefix(rawOut);
 
     const parsed = robustJsonParse(text);
     if (parsed) {

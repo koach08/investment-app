@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { HEAVY } from "@/lib/model-config";
 import { robustJsonParse } from "@/lib/json-utils";
+import { normalizeAiJsonPrefix } from "@/lib/ai-prefix";
 
 interface CandidateTechnical {
   ticker: string;
@@ -218,7 +219,7 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
       model: HEAVY.claude,
-      max_tokens: 8000,
+      max_tokens: 12000,
       messages: [
         { role: "user", content: prompt },
       ],
@@ -235,7 +236,7 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
     });
 
     const rawOut = message.content.find((b) => b.type === "text")?.text || "";
-    const text = "{" + rawOut;
+    const text = normalizeAiJsonPrefix(rawOut);
 
     const parsed = robustJsonParse(text);
     if (parsed) {

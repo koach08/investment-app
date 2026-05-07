@@ -89,6 +89,35 @@ export function robustJsonParse<T = unknown>(text: string): T | null {
     } catch { /* continue */ }
   }
 
+  // Strategy 6: Truncated AI output. Try parsing prefixes ending at progressively
+  // earlier '}' positions, attempting to close any unfinished trailing structure.
+  if (cleaned.startsWith("{")) {
+    const closingPositions: number[] = [];
+    for (let i = cleaned.length - 1; i >= 0; i--) {
+      if (cleaned[i] === "}") closingPositions.push(i);
+      if (closingPositions.length >= 8) break; // try the last 8 }-boundaries
+    }
+    for (const pos of closingPositions) {
+      const candidate = cleaned.slice(0, pos + 1);
+      try {
+        return JSON.parse(candidate) as T;
+      } catch { /* continue */ }
+      // Try with closing braces auto-completed
+      try {
+        const opens = (candidate.match(/\{/g) || []).length;
+        const closes = (candidate.match(/\}/g) || []).length;
+        const arrOpens = (candidate.match(/\[/g) || []).length;
+        const arrCloses = (candidate.match(/\]/g) || []).length;
+        if (opens > closes || arrOpens > arrCloses) {
+          let patched = candidate.replace(/,\s*$/, "");
+          patched += "]".repeat(Math.max(0, arrOpens - arrCloses));
+          patched += "}".repeat(Math.max(0, opens - closes));
+          return JSON.parse(patched) as T;
+        }
+      } catch { /* continue */ }
+    }
+  }
+
   return null;
 }
 

@@ -361,8 +361,19 @@ export default function MarkdownRenderer({
         parts.push(jsonToMarkdown(parsed));
         if (after) parts.push(after);
         cleaned = parts.join("\n\n");
+      } else {
+        // Even truncation-tolerant parser failed — show as a structured note,
+        // not as a flowing JSON dump.
+        cleaned =
+          "**生成結果が途中で切れた可能性があります** — 再生成するとより整った形で表示されます。\n\n" +
+          "以下、AI出力の生データ:\n\n```json\n" +
+          candidate.slice(0, 4000) + (candidate.length > 4000 ? "\n... (省略) ..." : "") +
+          "\n```";
       }
     }
+  } else if (cleaned.trimStart().startsWith("{") || cleaned.trimStart().startsWith("[")) {
+    // JSON-like but no known keys, parser failed → wrap in code block
+    cleaned = "```json\n" + cleaned + "\n```";
   }
 
   return (
