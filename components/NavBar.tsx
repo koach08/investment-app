@@ -12,9 +12,11 @@ const NAV_ITEMS = [
   { href: "/calendar", label: "📅 経済指標" },
   { href: "/macro", label: "🌐 マクロ" },
   { href: "/strategy", label: "📋 日別戦略" },
+  { href: "/quant", label: "🧮 クオンツ" },
   { href: "/advisor", label: "🧠 アドバイザー" },
   { href: "/assets", label: "📊 資産管理" },
   { href: "/portfolio", label: "💼 PF管理" },
+  { href: "/crypto", label: "💎 暗号資産" },
   { href: "/study", label: "📚 学習分析" },
 ];
 
