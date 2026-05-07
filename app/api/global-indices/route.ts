@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 
+// Route-level revalidation: 60 seconds
+export const revalidate = 60;
+
 const GLOBAL_INDICES: Record<string, { symbol: string; region: string }> = {
   // アジア
   "🇯🇵 日経225":      { symbol: "^N225", region: "アジア" },
@@ -54,7 +57,7 @@ async function fetchQuote(symbol: string): Promise<{ close: number; prevClose: n
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
-      next: { revalidate: 300 },
+      cache: "no-store",
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -102,5 +105,5 @@ export async function GET() {
     }
   });
 
-  return NextResponse.json(response);
+  return NextResponse.json({ data: response, fetchedAt: new Date().toISOString() });
 }

@@ -21,6 +21,7 @@ export default function GlobalPage() {
   const [activeRegion, setActiveRegion] = useState("all");
   const [aiSummary, setAiSummary] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
 
   useEffect(() => {
     fetchIndices();
@@ -30,8 +31,15 @@ export default function GlobalPage() {
     setLoading(true);
     try {
       const res = await fetch("/api/global-indices");
-      const data = await res.json();
-      setIndices(data);
+      const json = await res.json();
+      // Handle both old { [symbol]: data } and new { data, fetchedAt } formats
+      if (json.data && json.fetchedAt) {
+        setIndices(json.data);
+        setFetchedAt(json.fetchedAt);
+      } else {
+        setIndices(json);
+        setFetchedAt(null);
+      }
     } catch {
       // ignore
     }
@@ -69,7 +77,21 @@ export default function GlobalPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">世界市場</h1>
+        <div>
+          <h1 className="text-2xl font-bold">世界市場</h1>
+          {fetchedAt && (
+            <div className="text-xs text-zinc-500 mt-1">
+              最終取得: {new Date(fetchedAt).toLocaleString("ja-JP")}
+              <button
+                onClick={fetchIndices}
+                disabled={loading}
+                className="ml-2 text-blue-400 hover:text-blue-300 disabled:opacity-50"
+              >
+                更新
+              </button>
+            </div>
+          )}
+        </div>
         <button
           onClick={generateSummary}
           disabled={aiLoading || Object.keys(indices).length === 0}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { STANDARD } from "@/lib/model-config";
+import { robustJsonParse } from "@/lib/json-utils";
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -82,7 +83,9 @@ ${text.slice(0, 5000)}
     const message = await client.messages.create({
       model: STANDARD.claude,
       max_tokens: 3000,
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        { role: "user", content: prompt },
+      ],
       system: `あなたは機関投資家レベルのニュース・投資分析エンジンだ。以下の専門性を持つ:
 - セクターアナリスト: 業界構造、競争ダイナミクス、サプライチェーン波及を分析
 - マクロストラテジスト: 金利・為替・景気サイクルへの含意を評価
@@ -90,19 +93,15 @@ ${text.slice(0, 5000)}
 - リスクマネージャー: ファーストオーダーとセカンドオーダーのリスクを識別
 バイアスを排除し、データに基づいて分析する。コンセンサスと異なる視点があれば積極的に提示する。
 
-【重要】回答はJSONのみ返すこと。\`\`\`json等のコードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
+【重要】回答はJSONのみ返すこと。コードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
     });
 
-    const responseText = message.content.find((b) => b.type === "text")?.text || "";
+    const rawOut = message.content.find((b) => b.type === "text")?.text || "";
+    const responseText = "{" + rawOut;
 
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return NextResponse.json({ analysis: parsed });
-      } catch {
-        return NextResponse.json({ analysis: null, rawText: responseText });
-      }
+    const parsed = robustJsonParse(responseText);
+    if (parsed) {
+      return NextResponse.json({ analysis: parsed });
     }
 
     return NextResponse.json({ analysis: null, rawText: responseText });

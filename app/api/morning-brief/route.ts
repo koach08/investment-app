@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { HEAVY } from "@/lib/model-config";
+import { robustJsonParse } from "@/lib/json-utils";
 
 interface HoldingInput {
   code?: string;
@@ -119,7 +120,9 @@ ${holdingsContext}
     const message = await client.messages.create({
       model: HEAVY.claude,
       max_tokens: 4000,
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        { role: "user", content: prompt },
+      ],
       system: `あなたは大手証券会社のチーフストラテジストだ。毎朝7時のモーニングミーティングで、ポートフォリオマネージャーたちに今日の戦略を伝える。
 
 モーニングブリーフの原則:
@@ -131,18 +134,15 @@ ${holdingsContext}
 - コンセンサスと異なる見方があれば積極的に提示
 - 1分で読める簡潔さを維持
 
-【重要】回答はJSONのみ返すこと。\`\`\`json等のコードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
+【重要】回答はJSONのみ返すこと。コードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
     });
 
-    const text = message.content.find((b) => b.type === "text")?.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return NextResponse.json({ brief: parsed });
-      } catch {
-        return NextResponse.json({ brief: null, rawText: text });
-      }
+    const rawOut = message.content.find((b) => b.type === "text")?.text || "";
+    const text = "{" + rawOut;
+
+    const parsed = robustJsonParse(text);
+    if (parsed) {
+      return NextResponse.json({ brief: parsed });
     }
     return NextResponse.json({ brief: null, rawText: text });
   } catch (e) {

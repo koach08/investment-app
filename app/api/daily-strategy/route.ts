@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { HEAVY } from "@/lib/model-config";
+import { robustJsonParse } from "@/lib/json-utils";
 
 interface HoldingInput {
   code?: string;
@@ -293,7 +294,9 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
     const message = await client.messages.create({
       model: HEAVY.claude,
       max_tokens: 8000,
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        { role: "user", content: prompt },
+      ],
       system: `あなたは機関投資家レベルの冷徹なクオンツ・ストラテジストだ。以下の専門性を持つ:
 
 【エクイティリサーチ】決算分析のプロ。Beat/Missの定量化、ガイダンス改定の意味、アナリストQAのトーン変化を読み取る。投資テーゼの構築と追跡を行う。
@@ -303,20 +306,15 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
 
 データと確率に基づき、忖度なしで分析する。損切りや撤退の提案を躊躇しない。投資助言ではなく分析情報の提供である。
 
-【重要】回答はJSONのみ返すこと。\`\`\`json等のコードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
+【重要】回答はJSONのみ返すこと。コードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
     });
 
-    const text = message.content.find((b) => b.type === "text")?.text || "";
+    const rawOut = message.content.find((b) => b.type === "text")?.text || "";
+    const text = "{" + rawOut;
 
-    // Parse JSON from response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return NextResponse.json({ strategy: parsed });
-      } catch {
-        return NextResponse.json({ strategy: null, rawText: text });
-      }
+    const parsed = robustJsonParse(text);
+    if (parsed) {
+      return NextResponse.json({ strategy: parsed });
     }
 
     return NextResponse.json({ strategy: null, rawText: text });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { STANDARD } from "@/lib/model-config";
+import { robustJsonParse } from "@/lib/json-utils";
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -113,7 +114,9 @@ ${peers ? `- 比較銘柄: ${JSON.stringify(peers)}` : ""}
     const message = await client.messages.create({
       model: STANDARD.claude,
       max_tokens: 4000,
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        { role: "user", content: prompt },
+      ],
       system: `あなたは機関投資家レベルのバリュエーション・アナリストだ。以下の専門性を持つ:
 
 【マルチプル分析】同業他社との相対バリュエーション、ヒストリカル平均との比較を厳格に実施
@@ -121,18 +124,17 @@ ${peers ? `- 比較銘柄: ${JSON.stringify(peers)}` : ""}
 【MOAT評価】経済的堀の種類と強度を厳格に評価。堀がない企業には容赦なく「なし」と判定
 【シナリオ分析】Bull/Base/Bearの確率加重で期待リターンを算出
 
-数字と根拠に基づき分析する。「割安かもしれない」のような曖昧な表現は禁止。「PER 12.5倍は業界平均15.3倍を18%下回り、割安」のように定量的に述べよ。`,
+数字と根拠に基づき分析する。「割安かもしれない」のような曖昧な表現は禁止。「PER 12.5倍は業界平均15.3倍を18%下回り、割安」のように定量的に述べよ。
+
+【重要】回答はJSONのみ返すこと。コードブロックで囲まないこと。純粋なJSONオブジェクトのみを返せ。`,
     });
 
-    const text = message.content.find((b) => b.type === "text")?.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return NextResponse.json({ valuation: parsed });
-      } catch {
-        return NextResponse.json({ valuation: null, rawText: text });
-      }
+    const rawOut = message.content.find((b) => b.type === "text")?.text || "";
+    const text = "{" + rawOut;
+
+    const parsed = robustJsonParse(text);
+    if (parsed) {
+      return NextResponse.json({ valuation: parsed });
     }
     return NextResponse.json({ valuation: null, rawText: text });
   } catch (e) {

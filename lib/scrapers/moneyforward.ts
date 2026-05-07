@@ -116,25 +116,37 @@ export async function scrapeMoneyForward(
       }
     }
 
-    // 5. Extract pie chart breakdown (embedded in JS: initPieData)
+    // 5. Extract pie chart breakdown (embedded in JS: initPieData or Highcharts data)
     const breakdown: { name: string; amount: number; pct: number }[] = [];
     const pageContent = await page.content();
-    const pieMatch = pageContent.match(/initPieData\s*=\s*(\[[\s\S]*?\]);/);
-    if (pieMatch) {
-      try {
-        const pieData = JSON.parse(pieMatch[1].replace(/'/g, '"'));
-        for (const item of pieData) {
-          if (item.y && item.name) {
-            const pct = totalAssets > 0 ? (item.y / totalAssets) * 100 : 0;
-            breakdown.push({ name: item.name, amount: item.y, pct });
+
+    // Try multiple patterns for Highcharts pie data
+    const piePatterns = [
+      /initPieData\s*=\s*(\[[\s\S]*?\]);/,
+      /series\s*:\s*\[\s*\{[^}]*data\s*:\s*(\[[\s\S]*?\])/,
+      /data\s*:\s*(\[\s*\{[^[\]]*?name[^[\]]*?\}\s*(?:,\s*\{[^[\]]*?name[^[\]]*?\}\s*)*\])/,
+    ];
+    for (const pattern of piePatterns) {
+      if (breakdown.length > 0) break;
+      const pieMatch = pageContent.match(pattern);
+      if (pieMatch) {
+        try {
+          const pieData = JSON.parse(pieMatch[1].replace(/'/g, '"'));
+          for (const item of pieData) {
+            const amount = item.y || item.value || item.amount || 0;
+            const name = item.name || item.label || "";
+            if (amount && name) {
+              const pct = totalAssets > 0 ? (amount / totalAssets) * 100 : 0;
+              breakdown.push({ name, amount, pct });
+            }
           }
+        } catch {
+          // Parse failed, try next pattern
         }
-      } catch {
-        // Parse failed, try regex fallback
       }
     }
 
-    // Fallback: extract breakdown from visible text if pieData not found
+    // Fallback 1: extract breakdown from visible text if pieData not found
     if (breakdown.length === 0) {
       // Pattern: "預金・現金・暗号資産6,203,655円26.85%"
       const catRegex = /(預金[^\d]*|株式[^\d]*|投資信託[^\d]*|ポイント[^\d]*|年金[^\d]*|保険[^\d]*)([\d,]+)\s*円\s*([\d.]+)\s*%/g;
@@ -144,6 +156,20 @@ export async function scrapeMoneyForward(
         const amount = parseNumber(catMatch[2]);
         const pct = parseFloat(catMatch[3]) || 0;
         if (amount > 0) {
+          breakdown.push({ name, amount, pct });
+        }
+      }
+    }
+
+    // Fallback 2: another text pattern "預金・現金・暗号資産\n6,203,655円\n26.85%"
+    if (breakdown.length === 0) {
+      const catRegex2 = /(預金[・\w]*|株式[・\w（）]*|投資信託|ポイント|年金|保険)[^\d]*([\d,]+)円/g;
+      let catMatch2;
+      while ((catMatch2 = catRegex2.exec(bodyText)) !== null) {
+        const name = catMatch2[1].trim();
+        const amount = parseNumber(catMatch2[2]);
+        if (amount > 0 && !breakdown.some((b) => b.name === name)) {
+          const pct = totalAssets > 0 ? (amount / totalAssets) * 100 : 0;
           breakdown.push({ name, amount, pct });
         }
       }

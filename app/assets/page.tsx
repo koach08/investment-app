@@ -329,6 +329,7 @@ export default function AssetsPage() {
           const today = new Date().toISOString().substring(0, 10);
           let cash = 0, stocks = 0, margin = 0, funds = 0, points = 0, other = 0;
           const debt = data.totalLiabilities || 0;
+          const total = data.totalAssets;
 
           // Use MF's breakdown (pie chart) - most accurate
           if (data.breakdown && data.breakdown.length > 0) {
@@ -350,7 +351,13 @@ export default function AssetsPage() {
             }
           }
 
-          const total = data.totalAssets;
+          // If categories don't account for the total, put the remainder in "other"
+          const categorized = cash + stocks + margin + funds + points + other;
+          if (categorized < total * 0.9) {
+            // Breakdown didn't capture most of the total - put the difference in other
+            other += (total - categorized);
+          }
+
           const todayRecord: TimelineRecord = { date: today, total, cash, stocks, margin, funds, points, other, debt };
 
           setTimeline((prev) => {
@@ -1734,7 +1741,13 @@ function StackedAreaChart({ data }: { data: TimelineRecord[] }) {
         cumulative += v;
       }
     }
-    return { date: d.date, total: cumulative, layers };
+    // Use d.total (from MF) if categories don't account for all of it
+    const total = Math.max(cumulative, d.total || 0);
+    if (total > cumulative && cumulative > 0) {
+      // Add the gap as an implicit "other" layer at the top
+      layers.push({ key: "gap", y0: cumulative, y1: total, color: "#64748b" });
+    }
+    return { date: d.date, total, layers };
   });
 
   const maxVal = Math.max(...stacked.map((s) => s.total)) * 1.05;
@@ -1823,7 +1836,19 @@ function DonutChart({ data }: { data: TimelineRecord }) {
     .map((c) => ({ ...c, value: Math.abs(Number(data[c.key] || 0)) }))
     .filter((s) => s.value > 0);
 
-  const total = slices.reduce((s, v) => s + v.value, 0);
+  // If category breakdown doesn't account for total, add implicit "other" gap
+  const categorizedSum = slices.reduce((s, v) => s + v.value, 0);
+  if (data.total > categorizedSum && categorizedSum > 0) {
+    const gap = data.total - categorizedSum;
+    const existingOther = slices.find((s) => s.key === "other");
+    if (existingOther) {
+      existingOther.value += gap;
+    } else {
+      slices.push({ key: "other", label: "その他", color: "#64748b", value: gap });
+    }
+  }
+
+  const total = Math.max(slices.reduce((s, v) => s + v.value, 0), data.total || 0);
   let cumAngle = -Math.PI / 2;
 
   const arcs = slices.map((s) => {

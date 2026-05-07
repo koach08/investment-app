@@ -43,8 +43,8 @@ const MODELS = {
   // OpenAI
   openai: {
     LIGHT: "gpt-4.1-mini",                  // 4.1 Mini — 安価・高速
-    STANDARD: "gpt-4.1",                    // GPT-4.1 — 1M context
-    HEAVY: "gpt-5",                         // GPT-5 — $1.25/$10 per 1M、最新フラグシップ
+    STANDARD: "gpt-5.4",                    // GPT-5.4 — $2.50/$15 per 1M、最高分析性能
+    HEAVY: "gpt-5.4",                       // GPT-5.4 — 金融分析・戦略判断に最高品質
   },
 
   // Google Gemini

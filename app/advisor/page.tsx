@@ -5,6 +5,7 @@ import { clsx } from "clsx";
 import TickerLink from "@/components/TickerLink";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { generateSignal, atr } from "@/lib/indicators";
+import { parseAiJson } from "@/lib/json-utils";
 import { ChevronDown } from "lucide-react";
 
 interface Pick {
@@ -414,34 +415,8 @@ function MarginTradeCard({ trade }: { trade: MarginTrade }) {
   );
 }
 
-// Try to recover structured JSON from rawText when API JSON parsing fails
-function tryRecoverJson<T>(text: string, validator: (obj: T) => boolean): T | null {
-  const cleaned = text
-    .replace(/^```(?:json)?\s*\n?/i, "")
-    .replace(/\n?```\s*$/i, "")
-    .trim();
-  // Try multiple extraction strategies
-  const strategies = [
-    () => cleaned,
-    () => cleaned.match(/\{[\s\S]*\}/)?.[0],
-    () => {
-      // Handle case where JSON is split across markdown sections
-      const start = cleaned.indexOf("{");
-      const end = cleaned.lastIndexOf("}");
-      if (start !== -1 && end > start) return cleaned.slice(start, end + 1);
-      return null;
-    },
-  ];
-  for (const extract of strategies) {
-    const candidate = extract();
-    if (!candidate) continue;
-    try {
-      const parsed = JSON.parse(candidate) as T;
-      if (validator(parsed)) return parsed;
-    } catch { /* try next strategy */ }
-  }
-  return null;
-}
+// Re-export parseAiJson as tryRecoverJson for internal use
+const tryRecoverJson = parseAiJson;
 
 function riskToPercent(level: string): number {
   switch (level) {
@@ -771,7 +746,12 @@ export default function AdvisorPage() {
       if (data.analysis) {
         setNewsAnalysis(data.analysis);
       } else if (data.rawText) {
-        setNewsRawText(data.rawText);
+        const recovered = tryRecoverJson<NewsAnalysis>(data.rawText, (a) => !!(a.sentiment || a.summary_ja));
+        if (recovered) {
+          setNewsAnalysis(recovered);
+        } else {
+          setNewsRawText(data.rawText);
+        }
       } else if (data.error) {
         setNewsRawText(`エラー: ${data.error}`);
       }
@@ -1007,86 +987,77 @@ export default function AdvisorPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-4">AI投資アドバイザー</h1>
+      <h1 className="text-2xl font-bold mb-6">AI投資アドバイザー</h1>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b border-zinc-800 pb-2">
+      <div className="flex gap-1 mb-6 border-b border-zinc-800 pb-2 overflow-x-auto scrollbar-hide">
         <button
           onClick={() => setActiveTab("morning")}
           className={clsx(
-            "px-4 py-2 rounded-t text-sm font-medium",
-            activeTab === "morning"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:bg-zinc-800/50"
+            "px-4 py-2 rounded-t text-sm font-medium whitespace-nowrap",
+            activeTab === "morning" ? "bg-blue-600 text-white" : "text-zinc-400 hover:bg-zinc-800/50"
           )}
         >
-          モーニングブリーフ
+          ☀️ ブリーフ
         </button>
         <button
           onClick={() => setActiveTab("strategy")}
           className={clsx(
-            "px-4 py-2 rounded-t text-sm font-medium",
-            activeTab === "strategy"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:bg-zinc-800/50"
+            "px-4 py-2 rounded-t text-sm font-medium whitespace-nowrap",
+            activeTab === "strategy" ? "bg-purple-600 text-white" : "text-zinc-400 hover:bg-zinc-800/50"
           )}
         >
-          投資戦略
+          📊 投資戦略
         </button>
         <button
           onClick={() => setActiveTab("margin")}
           className={clsx(
-            "px-4 py-2 rounded-t text-sm font-medium",
-            activeTab === "margin"
-              ? "bg-red-900/80 text-red-200 border-b-2 border-red-500"
-              : "text-red-400/70 hover:bg-red-950/30"
+            "px-4 py-2 rounded-t text-sm font-medium whitespace-nowrap",
+            activeTab === "margin" ? "bg-red-600 text-white" : "text-zinc-400 hover:bg-zinc-800/50"
           )}
         >
-          信用取引
+          ⚡ 信用取引
         </button>
         <button
           onClick={() => setActiveTab("chat")}
           className={clsx(
-            "px-4 py-2 rounded-t text-sm font-medium",
-            activeTab === "chat"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:bg-zinc-800/50"
+            "px-4 py-2 rounded-t text-sm font-medium whitespace-nowrap",
+            activeTab === "chat" ? "bg-emerald-600 text-white" : "text-zinc-400 hover:bg-zinc-800/50"
           )}
         >
-          AI相談
+          💬 AI相談
         </button>
         <button
           onClick={() => setActiveTab("news")}
           className={clsx(
-            "px-4 py-2 rounded-t text-sm font-medium",
-            activeTab === "news"
-              ? "bg-zinc-800 text-white"
-              : "text-zinc-400 hover:bg-zinc-800/50"
+            "px-4 py-2 rounded-t text-sm font-medium whitespace-nowrap",
+            activeTab === "news" ? "bg-amber-600 text-white" : "text-zinc-400 hover:bg-zinc-800/50"
           )}
         >
-          ニュース分析
+          📰 ニュース
         </button>
       </div>
 
       {/* ===== MORNING BRIEF TAB ===== */}
       {activeTab === "morning" && (
         <div>
-          <div className="flex justify-between items-center mb-4">
-            <p className="text-sm text-zinc-400">
-              機関投資家レベルのモーニングブリーフ。夜間の動き、セクター動向、今日のカタリストを一覧。
+          <div className="flex justify-between items-center mb-6">
+            <p className="text-sm text-zinc-500 max-w-md">
+              夜間の動き・セクター動向・今日のカタリストを機関投資家レベルで一覧
             </p>
             <button
               onClick={generateMorningBrief}
               disabled={morningLoading}
-              className="px-6 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-medium"
+              className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-bold"
             >
               {morningLoading ? "生成中..." : "ブリーフ生成"}
             </button>
           </div>
 
           {morningLoading && (
-            <div className="text-center text-zinc-500 py-12">
-              <div className="animate-pulse">市場データを収集し、モーニングブリーフを生成中...</div>
+            <div className="flex flex-col items-center justify-center py-16">
+              <div className="inline-block w-10 h-10 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-4" />
+              <div className="text-sm text-zinc-400">市場データを収集し、モーニングブリーフを生成中...</div>
             </div>
           )}
 
@@ -1243,12 +1214,12 @@ export default function AdvisorPage() {
               )}
 
               {/* Quick jump */}
-              <div className="text-center flex gap-3 justify-center">
+              <div className="flex gap-3 justify-center pt-2">
                 <button onClick={() => setActiveTab("strategy")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
-                  詳細戦略を見る →
+                  📊 詳細戦略を見る
                 </button>
                 <button onClick={() => setActiveTab("chat")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
-                  AIに相談する →
+                  💬 AIに相談する
                 </button>
               </div>
             </div>
@@ -1261,12 +1232,11 @@ export default function AdvisorPage() {
           )}
 
           {!morningBrief && !morningRawText && !morningLoading && (
-            <div className="text-center text-zinc-500 mt-12">
-              <p className="text-lg">「ブリーフ生成」で今日のモーニングブリーフを取得</p>
-              <p className="text-sm mt-2">
-                夜間の市場動向、セクター動向、カタリスト、トレードアイデアを
-                <br />
-                機関投資家レベルで一覧表示します
+            <div className="text-center py-16">
+              <div className="text-4xl mb-4">☀️</div>
+              <p className="text-lg font-semibold text-zinc-300 mb-2">モーニングブリーフ</p>
+              <p className="text-sm text-zinc-500 max-w-sm mx-auto">
+                夜間の市場動向、セクター動向、カタリスト、トレードアイデアを機関投資家レベルで一覧表示
               </p>
             </div>
           )}
@@ -1277,7 +1247,7 @@ export default function AdvisorPage() {
       {activeTab === "strategy" && (
         <div>
           <div className="flex justify-between items-center mb-6">
-            <p className="text-sm text-zinc-400">
+            <p className="text-sm text-zinc-500 max-w-md">
               市場データ・経済指標・ニュース
               {holdings.length > 0 && `・保有${holdings.length}銘柄`}
               を統合分析
@@ -1285,16 +1255,17 @@ export default function AdvisorPage() {
             <button
               onClick={generateStrategy}
               disabled={strategyLoading}
-              className="px-6 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-sm font-bold transition-colors"
+              className="px-6 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg text-sm font-bold"
             >
               {strategyLoading ? "分析中..." : "戦略を生成"}
             </button>
           </div>
 
           {strategyLoading && (
-            <div className="text-center text-zinc-500 py-16">
-              <div className="inline-block w-8 h-8 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-4" />
-              <div className="text-sm">市場データを収集し、戦略を生成中...</div>
+            <div className="flex flex-col items-center justify-center py-16">
+              <div className="inline-block w-10 h-10 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-4" />
+              <div className="text-sm text-zinc-400">市場データを収集し、戦略を生成中...</div>
+              <div className="text-xs text-zinc-600 mt-1">30秒ほどかかります</div>
             </div>
           )}
 
@@ -1701,12 +1672,12 @@ export default function AdvisorPage() {
               </div>
 
               {/* Quick jump */}
-              <div className="text-center">
+              <div className="flex justify-center pt-2">
                 <button
                   onClick={() => setActiveTab("chat")}
-                  className="px-6 py-2.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm"
                 >
-                  この戦略についてAIに相談する →
+                  💬 この戦略についてAIに相談する
                 </button>
               </div>
             </div>
@@ -1719,13 +1690,13 @@ export default function AdvisorPage() {
           )}
 
           {!strategy && !rawText && !strategyLoading && (
-            <div className="text-center text-zinc-500 mt-16 space-y-3">
-              <div className="text-4xl opacity-20">&#128202;</div>
-              <p className="text-lg font-medium">投資戦略を生成</p>
-              <p className="text-sm max-w-lg mx-auto leading-relaxed">
+            <div className="text-center py-16">
+              <div className="text-4xl mb-4">📊</div>
+              <p className="text-lg font-semibold text-zinc-300 mb-2">投資戦略を生成</p>
+              <p className="text-sm text-zinc-500 max-w-sm mx-auto">
                 世界市場データ・経済指標・ニュース
                 {holdings.length > 0 && `・保有${holdings.length}銘柄のシグナル`}
-                を総合分析し、短期・中期・長期の具体的銘柄推薦を生成します
+                を総合分析し、短期・中期・長期の具体的銘柄推薦を生成
               </p>
             </div>
           )}
@@ -1735,25 +1706,25 @@ export default function AdvisorPage() {
       {/* ===== MARGIN TRADING TAB ===== */}
       {activeTab === "margin" && (
         <div>
-          <div className="flex justify-between items-center mb-4">
-            <p className="text-sm text-zinc-400">
-              信用取引専用分析。大型株{MARGIN_CANDIDATES.length}銘柄をスキャンし、IFDOCO注文値を生成。
-              {holdings.length > 0 && ` 保有${holdings.length}銘柄の信用ポジションも管理。`}
+          <div className="flex justify-between items-center mb-6">
+            <p className="text-sm text-zinc-500 max-w-md">
+              大型株{MARGIN_CANDIDATES.length}銘柄をスキャンし、IFDOCO注文値を生成
+              {holdings.length > 0 && `。保有${holdings.length}銘柄の信用ポジションも管理`}
             </p>
             <button
               onClick={generateMarginStrategy}
               disabled={marginLoading}
-              className="px-6 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 rounded-lg text-sm font-medium"
+              className="px-6 py-2.5 bg-red-600 hover:bg-red-500 disabled:opacity-50 rounded-lg text-sm font-bold"
             >
-              {marginLoading ? "分析中..." : "信用取引分析を生成"}
+              {marginLoading ? "分析中..." : "信用取引分析"}
             </button>
           </div>
 
           {marginLoading && (
-            <div className="text-center text-zinc-500 py-12">
-              <div className="animate-pulse">
-                {MARGIN_CANDIDATES.length}銘柄のテクニカルデータを収集し、信用取引戦略を生成中...（60秒ほどかかります）
-              </div>
+            <div className="flex flex-col items-center justify-center py-16">
+              <div className="inline-block w-10 h-10 border-2 border-red-500/30 border-t-red-500 rounded-full animate-spin mb-4" />
+              <div className="text-sm text-zinc-400">{MARGIN_CANDIDATES.length}銘柄のテクニカルデータを収集中...</div>
+              <div className="text-xs text-zinc-600 mt-1">60秒ほどかかります</div>
             </div>
           )}
 
@@ -1908,12 +1879,12 @@ export default function AdvisorPage() {
               </div>
 
               {/* Quick jump */}
-              <div className="text-center flex gap-3 justify-center">
+              <div className="flex gap-3 justify-center pt-2">
                 <button onClick={() => setActiveTab("strategy")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
-                  現物戦略を見る →
+                  📊 現物戦略を見る
                 </button>
                 <button onClick={() => setActiveTab("chat")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
-                  AIに相談する →
+                  💬 AIに相談する
                 </button>
               </div>
             </div>
@@ -1926,12 +1897,11 @@ export default function AdvisorPage() {
           )}
 
           {!marginStrategy && !marginRawText && !marginLoading && (
-            <div className="text-center text-zinc-500 mt-12">
-              <p className="text-lg">「信用取引分析を生成」で信用取引戦略を取得</p>
-              <p className="text-sm mt-2">
-                大型株{MARGIN_CANDIDATES.length}銘柄のテクニカルスキャン、
-                <br />
-                IFDOCO注文値、リスク管理ダッシュボードを生成します
+            <div className="text-center py-16">
+              <div className="text-4xl mb-4">⚡</div>
+              <p className="text-lg font-semibold text-zinc-300 mb-2">信用取引分析</p>
+              <p className="text-sm text-zinc-500 max-w-sm mx-auto">
+                大型株{MARGIN_CANDIDATES.length}銘柄のテクニカルスキャン、IFDOCO注文値、リスク管理ダッシュボードを生成
               </p>
               <p className="text-xs text-red-500/60 mt-4">
                 信用取引は元本を超える損失が発生する可能性があります
@@ -2071,8 +2041,8 @@ export default function AdvisorPage() {
       {/* ===== NEWS ANALYSIS TAB ===== */}
       {activeTab === "news" && (
         <div>
-          <p className="text-sm text-zinc-400 mb-4">
-            Ground News等からニューステキストを貼り付けて、投資への影響を分析します
+          <p className="text-sm text-zinc-500 mb-4">
+            ニューステキストを貼り付けて、投資への影響をAI分析
           </p>
 
           <div className="mb-4">
@@ -2097,8 +2067,9 @@ export default function AdvisorPage() {
           </div>
 
           {newsLoading && (
-            <div className="text-center text-zinc-500 py-8">
-              <div className="animate-pulse">ニュースを分析中...</div>
+            <div className="text-center py-8">
+              <div className="inline-block w-8 h-8 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-3" />
+              <div className="text-sm text-zinc-500">ニュースを分析中...</div>
             </div>
           )}
 
@@ -2303,12 +2274,10 @@ export default function AdvisorPage() {
           )}
 
           {!newsAnalysis && !newsRawText && !newsLoading && newsText.length === 0 && (
-            <div className="text-center text-zinc-500 mt-8">
-              <p className="text-lg">ニューステキストを貼り付けて分析</p>
-              <p className="text-sm mt-2">
-                Ground News、日経新聞、Bloomberg等からテキストをコピーして
-                <br />
-                投資への影響をAIが分析します
+            <div className="text-center py-8">
+              <div className="text-4xl mb-3">📰</div>
+              <p className="text-sm text-zinc-500 max-w-sm mx-auto">
+                Ground News、日経新聞、Bloomberg等からテキストをコピーして投資への影響をAI分析
               </p>
             </div>
           )}

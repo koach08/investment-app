@@ -5,6 +5,7 @@ import { clsx } from "clsx";
 import TickerLink from "@/components/TickerLink";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { generateSignal } from "@/lib/indicators";
+import { parseAiJson } from "@/lib/json-utils";
 
 /* ── Types ── */
 interface Pick {
@@ -189,24 +190,33 @@ function MonthCalendar({
 /* ── Pick Card ── */
 function PickCard({ pick, borderColor }: { pick: Pick; borderColor: string }) {
   return (
-    <div className={clsx("border rounded-lg p-3 bg-zinc-900/50", borderColor)}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <TickerLink ticker={pick.ticker} className="font-mono text-blue-400 font-bold hover:underline" />
+    <div className={clsx("border rounded-xl p-4 bg-zinc-900/40 hover:bg-zinc-900/60 transition-colors", borderColor)}>
+      {/* Header row */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2.5">
+          <TickerLink ticker={pick.ticker} className="font-mono text-blue-400 font-bold text-base hover:underline" />
           <span className="text-sm text-zinc-300">{pick.name}</span>
           <span className={clsx(
-            "px-2 py-0.5 rounded text-xs font-bold",
-            pick.action.includes("買") ? "bg-green-500/20 text-green-400" :
-            pick.action.includes("売") ? "bg-red-500/20 text-red-400" :
-            "bg-zinc-700 text-zinc-300"
+            "px-2.5 py-1 rounded-lg text-xs font-bold",
+            pick.action.includes("買") ? "bg-green-500/15 text-green-400 border border-green-500/20" :
+            pick.action.includes("売") ? "bg-red-500/15 text-red-400 border border-red-500/20" :
+            "bg-zinc-700/50 text-zinc-300 border border-zinc-600/30"
           )}>
             {pick.action}
           </span>
         </div>
-        <div className="text-right">
-          <div className="text-xs text-zinc-500">勝率</div>
+        <div className="text-right flex items-center gap-3">
+          <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+            <div
+              className={clsx(
+                "h-full rounded-full transition-all duration-1000",
+                pick.winProbability >= 60 ? "bg-green-500" : pick.winProbability >= 45 ? "bg-yellow-500" : "bg-red-500"
+              )}
+              style={{ width: `${pick.winProbability}%` }}
+            />
+          </div>
           <div className={clsx(
-            "text-lg font-bold",
+            "text-xl font-black font-mono",
             pick.winProbability >= 60 ? "text-green-400" :
             pick.winProbability >= 45 ? "text-yellow-400" : "text-red-400"
           )}>
@@ -215,96 +225,100 @@ function PickCard({ pick, borderColor }: { pick: Pick; borderColor: string }) {
         </div>
       </div>
 
-      <p className="text-sm text-zinc-400 mt-2">{pick.reason}</p>
+      {/* Reason */}
+      <p className="text-sm text-zinc-400 leading-relaxed mb-3">{pick.reason}</p>
 
+      {/* Thesis & Valuation */}
       {(pick.thesis || pick.valuation) && (
-        <div className="mt-2 space-y-1">
+        <div className="space-y-2 mb-3">
           {pick.thesis && (
-            <div className="text-xs">
-              <span className="text-cyan-500">テーゼ: </span>
+            <div className="bg-cyan-500/5 border border-cyan-800/20 rounded-lg px-3 py-2 text-xs">
+              <span className="text-cyan-500 font-semibold">テーゼ: </span>
               <span className="text-zinc-300">{pick.thesis}</span>
             </div>
           )}
           {pick.thesisBreaker && (
-            <div className="text-xs">
-              <span className="text-red-500">撤退条件: </span>
+            <div className="bg-red-500/5 border border-red-800/20 rounded-lg px-3 py-2 text-xs">
+              <span className="text-red-500 font-semibold">撤退条件: </span>
               <span className="text-zinc-400">{pick.thesisBreaker}</span>
             </div>
           )}
           {pick.valuation && (
-            <div className="text-xs">
-              <span className="text-purple-500">バリュエーション: </span>
+            <div className="bg-purple-500/5 border border-purple-800/20 rounded-lg px-3 py-2 text-xs">
+              <span className="text-purple-500 font-semibold">バリュエーション: </span>
               <span className="text-zinc-400">{pick.valuation}</span>
             </div>
           )}
         </div>
       )}
 
-      <div className="flex gap-4 mt-3 text-xs">
-        <div>
-          <span className="text-zinc-500">エントリー: </span>
-          <span className="text-white font-mono font-bold">¥{pick.entryPrice?.toLocaleString()}</span>
+      {/* Price targets */}
+      <div className="grid grid-cols-5 gap-2 text-xs mb-3">
+        <div className="bg-zinc-800/50 rounded-lg p-2 text-center">
+          <div className="text-zinc-500 text-[10px] mb-0.5">Entry</div>
+          <div className="text-white font-mono font-bold">¥{pick.entryPrice?.toLocaleString()}</div>
         </div>
-        <div>
-          <span className="text-zinc-500">利確: </span>
-          <span className="text-green-400 font-mono font-bold">¥{pick.targetPrice?.toLocaleString()}</span>
+        <div className="bg-zinc-800/50 rounded-lg p-2 text-center">
+          <div className="text-zinc-500 text-[10px] mb-0.5">Target</div>
+          <div className="text-green-400 font-mono font-bold">¥{pick.targetPrice?.toLocaleString()}</div>
         </div>
-        <div>
-          <span className="text-zinc-500">損切り: </span>
-          <span className="text-red-400 font-mono font-bold">¥{pick.stopLoss?.toLocaleString()}</span>
+        <div className="bg-zinc-800/50 rounded-lg p-2 text-center">
+          <div className="text-zinc-500 text-[10px] mb-0.5">Stop</div>
+          <div className="text-red-400 font-mono font-bold">¥{pick.stopLoss?.toLocaleString()}</div>
         </div>
-        <div>
-          <span className="text-zinc-500">RR比: </span>
-          <span className="text-cyan-400 font-mono">{pick.riskReward}</span>
+        <div className="bg-zinc-800/50 rounded-lg p-2 text-center">
+          <div className="text-zinc-500 text-[10px] mb-0.5">RR</div>
+          <div className="text-cyan-400 font-mono font-bold">{pick.riskReward}</div>
         </div>
-        <div>
-          <span className="text-zinc-500">期間: </span>
-          <span className="text-zinc-300">{pick.timeframe}</span>
+        <div className="bg-zinc-800/50 rounded-lg p-2 text-center">
+          <div className="text-zinc-500 text-[10px] mb-0.5">期間</div>
+          <div className="text-zinc-300 font-medium">{pick.timeframe}</div>
         </div>
       </div>
 
+      {/* IFDOCO */}
       {pick.ifdoco && (
-        <div className="mt-3 border border-zinc-700 rounded p-2 bg-zinc-950/50">
-          <div className="text-xs font-semibold text-zinc-400 mb-1">IFDOCO注文設定</div>
-          <div className="grid grid-cols-3 gap-2 text-xs">
-            <div>
-              <span className="text-zinc-500">IF注文: </span>
-              <span className="text-white font-mono">{pick.ifdoco.entryOrder.type} ¥{pick.ifdoco.entryOrder.price?.toLocaleString()}</span>
+        <div className="border border-yellow-700/30 bg-yellow-950/10 rounded-xl p-3 mb-3">
+          <div className="text-xs font-bold text-yellow-400 mb-2">IFDOCO注文</div>
+          <div className="grid grid-cols-3 gap-3 text-xs">
+            <div className="bg-zinc-900/60 rounded-lg p-2 text-center">
+              <div className="text-zinc-500 text-[10px] mb-0.5">IF 新規</div>
+              <div className="text-[10px] text-zinc-400">{pick.ifdoco.entryOrder.type}</div>
+              <div className="text-base font-black font-mono text-white">¥{pick.ifdoco.entryOrder.price?.toLocaleString()}</div>
             </div>
-            <div>
-              <span className="text-zinc-500">OCO利確: </span>
-              <span className="text-green-400 font-mono">¥{pick.ifdoco.takeProfit.price?.toLocaleString()}</span>
+            <div className="bg-zinc-900/60 rounded-lg p-2 text-center">
+              <div className="text-green-500 text-[10px] mb-0.5">OCO 利確</div>
+              <div className="text-base font-black font-mono text-green-400">¥{pick.ifdoco.takeProfit.price?.toLocaleString()}</div>
             </div>
-            <div>
-              <span className="text-zinc-500">OCO損切: </span>
-              <span className="text-red-400 font-mono">¥{pick.ifdoco.stopLoss.price?.toLocaleString()}</span>
+            <div className="bg-zinc-900/60 rounded-lg p-2 text-center">
+              <div className="text-red-500 text-[10px] mb-0.5">OCO 損切</div>
+              <div className="text-base font-black font-mono text-red-400">¥{pick.ifdoco.stopLoss.price?.toLocaleString()}</div>
             </div>
           </div>
           {(pick.holdingPeriod || pick.exitDate) && (
-            <div className="flex gap-4 mt-1 text-xs">
-              {pick.holdingPeriod && <div><span className="text-zinc-500">保有期間: </span><span className="text-zinc-300">{pick.holdingPeriod}</span></div>}
-              {pick.exitDate && <div><span className="text-zinc-500">決済予定: </span><span className="text-yellow-400">{pick.exitDate}</span></div>}
+            <div className="flex gap-4 mt-2 text-xs justify-center text-zinc-400">
+              {pick.holdingPeriod && <span>保有期間: <span className="text-zinc-300">{pick.holdingPeriod}</span></span>}
+              {pick.exitDate && <span>決済予定: <span className="text-yellow-400">{pick.exitDate}</span></span>}
             </div>
           )}
         </div>
       )}
 
+      {/* Dividend & Benefits */}
       {(pick.dividend || pick.shareholderBenefits) && (
-        <div className="flex gap-4 mt-2 text-xs">
-          {pick.dividend && <div><span className="text-zinc-500">配当: </span><span className="text-yellow-400">{pick.dividend}</span></div>}
-          {pick.shareholderBenefits && <div><span className="text-zinc-500">優待: </span><span className="text-pink-400">{pick.shareholderBenefits}</span></div>}
+        <div className="flex gap-3">
+          {pick.dividend && (
+            <div className="bg-zinc-800/40 rounded-lg px-3 py-1.5 text-xs">
+              <span className="text-zinc-500">配当: </span><span className="text-yellow-400 font-medium">{pick.dividend}</span>
+            </div>
+          )}
+          {pick.shareholderBenefits && (
+            <div className="bg-zinc-800/40 rounded-lg px-3 py-1.5 text-xs">
+              <span className="text-zinc-500">優待: </span><span className="text-pink-400 font-medium">{pick.shareholderBenefits}</span>
+            </div>
+          )}
         </div>
       )}
-
-      <div className="mt-2 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-        <div
-          className={clsx(
-            "h-full rounded-full transition-all duration-1000",
-            pick.winProbability >= 60 ? "bg-green-500" : pick.winProbability >= 45 ? "bg-yellow-500" : "bg-red-500"
-          )}
-          style={{ width: `${pick.winProbability}%` }}
-        />
-      </div>
     </div>
   );
 }
@@ -427,10 +441,14 @@ export default function StrategyPage() {
       });
       const data = await res.json();
 
-      if (data.strategy) {
+      let strategyData = data.strategy;
+      if (!strategyData && data.rawText) {
+        strategyData = parseAiJson<Strategy>(data.rawText, (s) => !!(s.marketOverview || s.strategies));
+      }
+      if (strategyData) {
         const entry: SavedEntry = {
           date: selectedDate,
-          strategy: data.strategy,
+          strategy: strategyData,
           generatedAt: new Date().toISOString(),
         };
         setHistory((prev) => ({ ...prev, [selectedDate]: entry }));
@@ -469,11 +487,11 @@ export default function StrategyPage() {
         {/* ── Left: Calendar ── */}
         <div className="space-y-4">
           {/* Month nav */}
-          <div className="border border-zinc-800 rounded-lg p-4 bg-zinc-900/50">
-            <div className="flex items-center justify-between mb-3">
-              <button onClick={prevMonth} className="px-2 py-1 rounded hover:bg-zinc-800 text-zinc-400">&lt;</button>
-              <span className="font-semibold text-sm">{monthLabel}</span>
-              <button onClick={nextMonth} className="px-2 py-1 rounded hover:bg-zinc-800 text-zinc-400">&gt;</button>
+          <div className="border border-zinc-800/60 rounded-xl p-4 bg-zinc-900/30">
+            <div className="flex items-center justify-between mb-4">
+              <button onClick={prevMonth} className="w-8 h-8 rounded-lg hover:bg-zinc-800 text-zinc-400 flex items-center justify-center transition-colors">&lt;</button>
+              <span className="font-bold text-sm tracking-wide">{monthLabel}</span>
+              <button onClick={nextMonth} className="w-8 h-8 rounded-lg hover:bg-zinc-800 text-zinc-400 flex items-center justify-center transition-colors">&gt;</button>
             </div>
             <MonthCalendar
               year={calYear}
@@ -482,15 +500,15 @@ export default function StrategyPage() {
               savedDates={savedDates}
               onSelect={setSelectedDate}
             />
-            <div className="mt-3 flex items-center gap-2 text-xs text-zinc-500">
+            <div className="mt-4 flex items-center gap-2 text-xs text-zinc-500">
               <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> 戦略保存済み
             </div>
           </div>
 
           {/* Saved dates list */}
           {savedDates.size > 0 && (
-            <div className="border border-zinc-800 rounded-lg p-4 bg-zinc-900/50">
-              <h3 className="text-sm font-semibold text-zinc-400 mb-2">保存済みの戦略</h3>
+            <div className="border border-zinc-800/60 rounded-xl p-4 bg-zinc-900/30">
+              <h3 className="text-sm font-semibold text-zinc-400 mb-3">保存済み</h3>
               <div className="space-y-1 max-h-60 overflow-y-auto">
                 {Object.entries(history)
                   .sort(([a], [b]) => b.localeCompare(a))
@@ -529,14 +547,14 @@ export default function StrategyPage() {
         {/* ── Right: Strategy display ── */}
         <div>
           {/* Header bar */}
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-6">
             <div>
-              <h2 className="text-lg font-bold">
+              <h2 className="text-xl font-bold">
                 {selectedDate === today ? "今日" : selectedDate} の戦略
               </h2>
               {currentEntry && (
-                <p className="text-xs text-zinc-500">
-                  生成日時: {new Date(currentEntry.generatedAt).toLocaleString("ja-JP")}
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  生成: {new Date(currentEntry.generatedAt).toLocaleString("ja-JP")}
                 </p>
               )}
             </div>
@@ -550,9 +568,10 @@ export default function StrategyPage() {
           </div>
 
           {loading && (
-            <div className="text-center text-zinc-500 py-16">
-              <div className="animate-pulse text-lg mb-2">市場データを収集し、戦略を生成中...</div>
-              <div className="text-xs">30秒ほどかかります</div>
+            <div className="flex flex-col items-center justify-center py-16">
+              <div className="inline-block w-10 h-10 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-4" />
+              <div className="text-sm text-zinc-400">市場データを収集し、戦略を生成中...</div>
+              <div className="text-xs text-zinc-600 mt-1">30秒ほどかかります</div>
             </div>
           )}
 
@@ -584,81 +603,100 @@ export default function StrategyPage() {
           {strategy && (
             <div className="space-y-5">
               {/* Market Overview */}
-              <div className="border border-zinc-800 rounded-lg p-4">
-                <h3 className="text-lg font-semibold mb-2">市場概況</h3>
+              <div className="border border-zinc-800/60 rounded-xl p-5 bg-gradient-to-br from-zinc-900/80 to-zinc-950">
+                <div className="flex items-center gap-3 mb-3">
+                  <h3 className="text-base font-bold text-zinc-100">市場概況</h3>
+                  {strategy.macroRegime && (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-medium">
+                      {strategy.macroRegime}
+                    </span>
+                  )}
+                </div>
                 <p className="text-sm text-zinc-300 leading-relaxed">{strategy.marketOverview}</p>
               </div>
 
-              {/* Risk + Macro */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className={clsx("border rounded-lg p-4", RISK_COLORS[strategy.riskLevel] || RISK_COLORS.MEDIUM)}>
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">
-                      {strategy.riskLevel === "LOW" ? "🟢" : strategy.riskLevel === "MEDIUM" ? "🟡" : strategy.riskLevel === "HIGH" ? "🟠" : "🔴"}
-                    </span>
-                    <div>
-                      <div className="font-bold">リスクレベル: {RISK_LABELS[strategy.riskLevel] || strategy.riskLevel}</div>
-                      <div className="text-sm mt-1 opacity-80">{strategy.riskComment}</div>
-                    </div>
+              {/* Risk */}
+              <div className={clsx("border rounded-xl p-5", RISK_COLORS[strategy.riskLevel] || RISK_COLORS.MEDIUM)}>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">
+                    {strategy.riskLevel === "LOW" ? "🟢" : strategy.riskLevel === "MEDIUM" ? "🟡" : strategy.riskLevel === "HIGH" ? "🟠" : "🔴"}
+                  </span>
+                  <div className="flex-1">
+                    <div className="font-bold text-base">{RISK_LABELS[strategy.riskLevel] || strategy.riskLevel}</div>
+                    <div className="text-sm mt-1 opacity-80">{strategy.riskComment}</div>
                   </div>
                 </div>
-                {strategy.macroRegime && (
-                  <div className="border border-zinc-800 rounded-lg p-4 flex items-center">
-                    <div>
-                      <div className="text-xs text-zinc-500 mb-1">マクロレジーム</div>
-                      <div className="text-sm text-cyan-400 font-medium">{strategy.macroRegime}</div>
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Portfolio Health */}
               {strategy.portfolioHealth && (
-                <div className="border border-yellow-800/30 bg-yellow-950/10 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-yellow-400 mb-2">ポートフォリオ健全性</h3>
-                  <div className="space-y-1 text-sm">
-                    <div><span className="text-zinc-500">セクター集中度: </span><span className="text-zinc-300">{strategy.portfolioHealth.sectorConcentration}</span></div>
-                    <div><span className="text-zinc-500">最大リスク: </span><span className="text-zinc-300">{strategy.portfolioHealth.topRisk}</span></div>
-                    {strategy.portfolioHealth.driftAlert && (
-                      <div><span className="text-zinc-500">ドリフト警告: </span><span className="text-orange-400">{strategy.portfolioHealth.driftAlert}</span></div>
-                    )}
-                    {strategy.portfolioHealth.rebalanceActions?.length > 0 && (
-                      <div className="mt-2">
-                        <span className="text-zinc-500 text-xs">リバランス提案:</span>
+                <div className="border border-yellow-800/30 bg-yellow-950/10 rounded-xl p-5">
+                  <h3 className="text-base font-bold text-yellow-400 mb-4">ポートフォリオ健全性</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                    <div className="border border-zinc-800/40 rounded-xl p-4 bg-zinc-900/30">
+                      <div className="text-[11px] text-zinc-500 font-medium uppercase tracking-wider mb-1.5">セクター集中度</div>
+                      <p className="text-sm text-zinc-300 leading-relaxed">{strategy.portfolioHealth.sectorConcentration}</p>
+                    </div>
+                    <div className="border border-red-800/20 rounded-xl p-4 bg-red-950/5">
+                      <div className="text-[11px] text-red-500/70 font-medium uppercase tracking-wider mb-1.5">最大リスク</div>
+                      <p className="text-sm text-zinc-300 leading-relaxed">{strategy.portfolioHealth.topRisk}</p>
+                    </div>
+                  </div>
+                  {strategy.portfolioHealth.driftAlert && (
+                    <div className="border border-orange-800/20 rounded-xl p-4 bg-orange-950/5 mb-4">
+                      <div className="text-[11px] text-orange-500/70 font-medium uppercase tracking-wider mb-1.5">ドリフト警告</div>
+                      <p className="text-sm text-orange-300/80 leading-relaxed">{strategy.portfolioHealth.driftAlert}</p>
+                    </div>
+                  )}
+                  {strategy.portfolioHealth.rebalanceActions?.length > 0 && (
+                    <div>
+                      <div className="text-[11px] text-zinc-500 font-medium uppercase tracking-wider mb-2">リバランス提案</div>
+                      <div className="space-y-2">
                         {strategy.portfolioHealth.rebalanceActions.map((a, i) => (
-                          <div key={i} className="text-zinc-300 ml-2">→ {a}</div>
+                          <div key={i} className="flex gap-3 items-start border border-zinc-800/30 rounded-lg px-4 py-3 bg-zinc-900/20">
+                            <span className="text-yellow-500/70 text-sm font-bold shrink-0">{i + 1}</span>
+                            <p className="text-sm text-zinc-300 leading-relaxed">{a}</p>
+                          </div>
                         ))}
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Holdings Verdict */}
               {strategy.holdingsVerdict && strategy.holdingsVerdict.length > 0 && (
-                <div className="border border-zinc-800 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-zinc-400 mb-2">保有銘柄判定</h3>
-                  <div className="space-y-1">
+                <div className="border border-zinc-800/60 rounded-xl p-5">
+                  <h3 className="text-base font-bold text-zinc-100 mb-4">保有銘柄判定</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {strategy.holdingsVerdict.map((hv, i) => (
-                      <div key={i} className="flex items-center gap-2 text-sm">
-                        <TickerLink ticker={hv.ticker} />
-                        <span className={clsx(
-                          "px-1.5 py-0.5 rounded text-xs font-bold",
-                          hv.action === "損切り" ? "bg-red-500/20 text-red-400" :
-                          hv.action === "全利確" || hv.action === "部分利確" ? "bg-green-500/20 text-green-400" :
-                          hv.action === "買い増し" ? "bg-blue-500/20 text-blue-400" :
-                          "bg-zinc-700 text-zinc-300"
-                        )}>
-                          {hv.action}
-                        </span>
-                        <span className={clsx(
-                          "text-xs px-1 rounded",
-                          hv.thesisStatus === "有効" ? "text-green-500" :
-                          hv.thesisStatus === "崩壊" ? "text-red-500" : "text-yellow-500"
-                        )}>
-                          [{hv.thesisStatus}]
-                        </span>
-                        <span className="text-zinc-500 text-xs flex-1">{hv.reason}</span>
+                      <div key={i} className={clsx(
+                        "border rounded-xl p-4 bg-zinc-900/40",
+                        hv.action === "損切り" || hv.action === "全利確" ? "border-red-800/30" :
+                        hv.action === "部分利確" ? "border-green-800/30" :
+                        hv.action === "買い増し" ? "border-blue-800/30" :
+                        "border-zinc-800/40"
+                      )}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <TickerLink ticker={hv.ticker} className="font-mono text-blue-400 font-bold text-sm" />
+                          <span className={clsx(
+                            "px-2 py-0.5 rounded-lg text-xs font-bold",
+                            hv.action === "損切り" ? "bg-red-500/15 text-red-400 border border-red-500/20" :
+                            hv.action === "全利確" || hv.action === "部分利確" ? "bg-green-500/15 text-green-400 border border-green-500/20" :
+                            hv.action === "買い増し" ? "bg-blue-500/15 text-blue-400 border border-blue-500/20" :
+                            "bg-zinc-700/50 text-zinc-300 border border-zinc-600/30"
+                          )}>
+                            {hv.action}
+                          </span>
+                          <span className={clsx(
+                            "ml-auto text-xs font-semibold px-2 py-0.5 rounded-full",
+                            hv.thesisStatus === "有効" ? "bg-green-500/10 text-green-400" :
+                            hv.thesisStatus === "崩壊" ? "bg-red-500/10 text-red-400" : "bg-yellow-500/10 text-yellow-400"
+                          )}>
+                            {hv.thesisStatus}
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-400 leading-relaxed">{hv.reason}</p>
                       </div>
                     ))}
                   </div>
@@ -667,15 +705,26 @@ export default function StrategyPage() {
 
               {/* Catalysts */}
               {strategy.catalysts && strategy.catalysts.length > 0 && (
-                <div className="border border-zinc-800 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-zinc-400 mb-2">今後のカタリスト</h3>
-                  {strategy.catalysts.map((c, i) => (
-                    <div key={i} className="flex gap-2 text-sm mb-1">
-                      <span className="text-zinc-500 font-mono shrink-0">{c.date}</span>
-                      <span className="text-zinc-300">{c.event}</span>
-                      <span className="text-zinc-500">{c.impact}</span>
-                    </div>
-                  ))}
+                <div className="border border-zinc-800/60 rounded-xl p-5">
+                  <h3 className="text-base font-bold text-zinc-100 mb-4">今後のカタリスト</h3>
+                  <div className="space-y-3">
+                    {strategy.catalysts.map((c, i) => (
+                      <div key={i} className="border border-zinc-800/40 rounded-xl p-4 bg-zinc-900/30 hover:bg-zinc-900/50 transition-colors">
+                        <div className="flex items-center gap-3 mb-2">
+                          <span className="font-mono text-xs bg-zinc-800 text-zinc-300 px-2.5 py-1 rounded-lg shrink-0">{c.date}</span>
+                          <span className="text-sm font-semibold text-zinc-200">{c.event}</span>
+                        </div>
+                        <p className="text-xs text-zinc-400 leading-relaxed mb-2">{c.impact}</p>
+                        {c.affectedTickers && c.affectedTickers.length > 0 && (
+                          <div className="flex gap-1.5 flex-wrap">
+                            {c.affectedTickers.map((t, j) => (
+                              <TickerLink key={j} ticker={t} className="font-mono text-[11px] text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md hover:bg-blue-500/20 transition-colors" />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -709,20 +758,22 @@ export default function StrategyPage() {
               {strategyKeys.map((key) => {
                 const section = strategy.strategies[key];
                 if (!section) return null;
-                const borderColor =
-                  key === "shortTerm" ? "border-orange-800/50" :
-                  key === "midTerm" ? "border-blue-800/50" : "border-green-800/50";
-                const pickBorder =
-                  key === "shortTerm" ? "border-zinc-800" :
-                  key === "midTerm" ? "border-zinc-800" : "border-zinc-800";
+                const colors = key === "shortTerm"
+                  ? { border: "border-orange-800/40", bg: "bg-orange-950/5", accent: "text-orange-400", dot: "bg-orange-400" }
+                  : key === "midTerm"
+                    ? { border: "border-blue-800/40", bg: "bg-blue-950/5", accent: "text-blue-400", dot: "bg-blue-400" }
+                    : { border: "border-green-800/40", bg: "bg-green-950/5", accent: "text-green-400", dot: "bg-green-400" };
 
                 return (
-                  <div key={key} className={clsx("border rounded-lg p-4", borderColor)}>
-                    <h3 className="text-lg font-semibold mb-1">{section.title}</h3>
-                    <p className="text-sm text-zinc-400 mb-4">{section.description}</p>
-                    <div className="space-y-3">
+                  <div key={key} className={clsx("border rounded-xl p-5", colors.border, colors.bg)}>
+                    <div className="flex items-center gap-2.5 mb-2">
+                      <span className={clsx("w-2 h-2 rounded-full", colors.dot)} />
+                      <h3 className="text-lg font-bold text-zinc-100">{section.title}</h3>
+                    </div>
+                    <p className="text-sm text-zinc-400 leading-relaxed mb-5">{section.description}</p>
+                    <div className="space-y-4">
                       {section.picks?.map((pick, i) => (
-                        <PickCard key={i} pick={pick} borderColor={pickBorder} />
+                        <PickCard key={i} pick={pick} borderColor="border-zinc-800/50" />
                       ))}
                     </div>
                   </div>
@@ -730,36 +781,40 @@ export default function StrategyPage() {
               })}
 
               {/* Overall advice */}
-              <div className="border border-purple-800/50 bg-purple-950/20 rounded-lg p-4">
-                <h3 className="text-lg font-semibold mb-2">全体アドバイス</h3>
+              <div className="border border-purple-800/50 bg-purple-950/20 rounded-lg p-5">
+                <h3 className="text-base font-bold mb-3 text-zinc-100">全体アドバイス</h3>
                 <p className="text-sm text-zinc-300 leading-relaxed">{strategy.overallAdvice}</p>
               </div>
 
               {/* Watch list */}
               {strategy.watchList && strategy.watchList.length > 0 && (
-                <div className="border border-zinc-800 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-zinc-400 mb-2">注目ポイント</h3>
-                  <ul className="space-y-1">
-                    {strategy.watchList.map((item, i) => (
-                      <li key={i} className="text-sm text-zinc-300 flex gap-2">
-                        <span className="text-yellow-500 shrink-0">•</span>
-                        <span>{renderWithTickerLinks(item)}</span>
-                      </li>
-                    ))}
-                  </ul>
+                <div className="border border-zinc-800/60 rounded-xl overflow-hidden">
+                  <div className="bg-zinc-900/80 border-b border-zinc-800/60 px-5 py-3">
+                    <h3 className="text-sm font-bold text-zinc-200">注目ポイント</h3>
+                  </div>
+                  <div className="p-5">
+                    <ul className="space-y-2">
+                      {strategy.watchList.map((item, i) => (
+                        <li key={i} className="text-sm text-zinc-300 flex gap-2">
+                          <span className="text-yellow-500 shrink-0">●</span>
+                          <span>{renderWithTickerLinks(item)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
               )}
 
               {/* Tax */}
               {strategy.taxOptimization && (
-                <div className="border border-emerald-800/30 bg-emerald-950/10 rounded-lg p-4">
-                  <h3 className="text-sm font-semibold text-emerald-400 mb-2">税金最適化</h3>
+                <div className="border border-emerald-800/20 bg-emerald-950/5 rounded-xl p-5">
+                  <h3 className="text-sm font-bold text-emerald-400 mb-2">税金最適化</h3>
                   <p className="text-sm text-zinc-300 leading-relaxed">{strategy.taxOptimization}</p>
                 </div>
               )}
 
               {/* Disclaimer */}
-              <div className="text-xs text-zinc-600 p-3 border border-zinc-800/50 rounded">
+              <div className="text-xs text-zinc-600 p-4 border border-zinc-800/30 rounded-xl bg-zinc-950/50">
                 {strategy.disclaimer || "本分析は情報提供を目的としたものであり、投資助言ではありません。投資判断は自己責任でお願いします。"}
               </div>
             </div>

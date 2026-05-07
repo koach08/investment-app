@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { HEAVY } from "@/lib/model-config";
+import { robustJsonParse } from "@/lib/json-utils";
 
 interface CandidateTechnical {
   ticker: string;
@@ -218,7 +219,9 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
     const message = await client.messages.create({
       model: HEAVY.claude,
       max_tokens: 8000,
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        { role: "user", content: prompt },
+      ],
       system: `あなたはヘッジファンドの信用取引デスクのチーフトレーダーだ。以下の専門性を持つ:
 
 【信用取引ストラテジスト】ATRベースのリスク管理、IFDOCO注文戦略、ポジションサイジング、金利コスト最適化のプロフェッショナル。
@@ -228,19 +231,15 @@ ${JSON.stringify(news?.slice(0, 10), null, 2)}
 
 感情を完全に排除し、確率論とデータに基づいて判断する。NO_TRADEの判定を躊躇しない。信用取引のリスクを常に最優先で考慮する。
 
-【重要】回答はJSONのみ返すこと。\`\`\`json等のコードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
+【重要】回答はJSONのみ返すこと。コードブロックで囲まないこと。説明文やコメントも不要。純粋なJSONオブジェクトのみを返せ。`,
     });
 
-    const text = message.content.find((b) => b.type === "text")?.text || "";
+    const rawOut = message.content.find((b) => b.type === "text")?.text || "";
+    const text = "{" + rawOut;
 
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return NextResponse.json({ strategy: parsed });
-      } catch {
-        return NextResponse.json({ strategy: null, rawText: text });
-      }
+    const parsed = robustJsonParse(text);
+    if (parsed) {
+      return NextResponse.json({ strategy: parsed });
     }
 
     return NextResponse.json({ strategy: null, rawText: text });
