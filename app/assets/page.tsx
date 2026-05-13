@@ -1075,8 +1075,11 @@ export default function AssetsPage() {
           <div className="border border-zinc-800 rounded-lg p-4">
             <h3 className="text-sm font-semibold text-zinc-400 mb-2">自動連携について</h3>
             <p className="text-sm text-zinc-300 leading-relaxed">
-              SBI証券・マネーフォワードのログイン情報が <code className="text-cyan-400">.env.local</code> に設定されていれば、
-              ボタン1つで最新の保有銘柄・資産情報を自動取得します。
+              <strong>Zaim API</strong> 経由で総資産を取得 (家計簿アプリ Zaim と連携した銀行/証券口座の残高)。
+              <strong>SBI 証券</strong>は別途スクレイピングで保有銘柄詳細を取得 (ローカル環境のみ)。
+            </p>
+            <p className="text-xs text-zinc-500 mt-2">
+              ※ MoneyForward は不正アクセス対策で API/スクレイピング不可となったため Zaim に移行。
             </p>
             {lastSyncTime && (
               <p className="text-xs text-zinc-500 mt-2">
@@ -1087,11 +1090,11 @@ export default function AssetsPage() {
 
           {/* Sync all button */}
           <button
-            onClick={syncAll}
-            disabled={syncingSBI || syncingMF}
+            onClick={async () => { await Promise.all([syncFromSBI(), syncFromZaim()]); setStatusMsg("同期完了"); }}
+            disabled={syncingSBI || syncingZaim}
             className="w-full py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 disabled:opacity-50 rounded-lg text-sm font-bold transition-all"
           >
-            {syncingSBI || syncingMF ? "同期中..." : "SBI + マネーフォワード 一括同期"}
+            {syncingSBI || syncingZaim ? "同期中..." : "SBI + Zaim 一括同期"}
           </button>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1101,7 +1104,7 @@ export default function AssetsPage() {
                 <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center text-xl">S</div>
                 <div>
                   <h4 className="font-semibold">SBI証券</h4>
-                  <p className="text-xs text-zinc-500">保有銘柄・残高を取得</p>
+                  <p className="text-xs text-zinc-500">保有銘柄・残高を取得 (local 専用)</p>
                 </div>
               </div>
               <p className="text-xs text-zinc-400 mb-4">
@@ -1121,29 +1124,31 @@ export default function AssetsPage() {
               </button>
             </div>
 
-            {/* MoneyForward Card */}
+            {/* Zaim Card */}
             <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/50">
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-lg bg-green-600/20 flex items-center justify-center text-xl">M</div>
+                <div className="w-10 h-10 rounded-lg bg-green-600/20 flex items-center justify-center text-xl">Z</div>
                 <div>
-                  <h4 className="font-semibold">マネーフォワード</h4>
-                  <p className="text-xs text-zinc-500">資産全体を取得</p>
+                  <h4 className="font-semibold">Zaim</h4>
+                  <p className="text-xs text-zinc-500">家計簿アプリから総資産取得 (公式 API)</p>
                 </div>
               </div>
               <p className="text-xs text-zinc-400 mb-4">
-                必要な環境変数: <code className="text-cyan-400">MF_EMAIL</code>, <code className="text-cyan-400">MF_PASSWORD</code>
+                必要な環境変数: <code className="text-cyan-400">ZAIM_CONSUMER_KEY/SECRET</code> + <code className="text-cyan-400">ZAIM_ACCESS_TOKEN/SECRET</code>
+                <br />
+                未設定の場合: <a href="/api/zaim/auth" className="text-cyan-400 underline">/api/zaim/auth</a> で OAuth 認証
               </p>
               <button
-                onClick={syncFromMF}
-                disabled={syncingMF}
+                onClick={syncFromZaim}
+                disabled={syncingZaim}
                 className="w-full py-2 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
               >
-                {syncingMF ? (
+                {syncingZaim ? (
                   <span className="flex items-center justify-center gap-2">
                     <span className="animate-spin inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
                     取得中...
                   </span>
-                ) : "マネーフォワードから取得"}
+                ) : "Zaim から取得"}
               </button>
             </div>
           </div>
@@ -1152,14 +1157,18 @@ export default function AssetsPage() {
           <div className="border border-zinc-800 rounded-lg p-4">
             <h3 className="text-sm font-semibold text-zinc-400 mb-3">環境変数の設定方法</h3>
             <div className="bg-zinc-950 rounded p-3 font-mono text-xs text-zinc-300 leading-relaxed">
-              <div className="text-zinc-500 mb-1"># .env.local に以下を追加</div>
-              <div><span className="text-cyan-400">SBI_USER_ID</span>=あなたのSBIユーザーID</div>
-              <div><span className="text-cyan-400">SBI_PASSWORD</span>=あなたのSBIパスワード</div>
-              <div className="mt-2"><span className="text-cyan-400">MF_EMAIL</span>=マネフォのメールアドレス</div>
-              <div><span className="text-cyan-400">MF_PASSWORD</span>=マネフォのパスワード</div>
+              <div className="text-zinc-500 mb-1"># Vercel env (or .env.local) に以下を追加</div>
+              <div className="text-zinc-500"># Zaim (本番で動作)</div>
+              <div><span className="text-cyan-400">ZAIM_CONSUMER_KEY</span>=dev.zaim.net で取得</div>
+              <div><span className="text-cyan-400">ZAIM_CONSUMER_SECRET</span>=同上</div>
+              <div><span className="text-cyan-400">ZAIM_ACCESS_TOKEN</span>=/api/zaim/auth で取得</div>
+              <div><span className="text-cyan-400">ZAIM_ACCESS_SECRET</span>=同上</div>
+              <div className="mt-3 text-zinc-500"># SBI (local 専用、Playwright 必須)</div>
+              <div><span className="text-cyan-400">SBI_USER_ID</span>=SBI のユーザー ID</div>
+              <div><span className="text-cyan-400">SBI_PASSWORD</span>=SBI のパスワード</div>
             </div>
             <p className="text-xs text-zinc-500 mt-2">
-              ※ 認証情報はサーバーサイドでのみ使用され、ブラウザには送信されません。Playwrightによるスクレイピングで取得します。
+              ※ Zaim は OAuth 1.0a、SBI はサーバーサイド Playwright スクレイピング (local 環境のみ)。
             </p>
           </div>
         </div>
