@@ -294,6 +294,45 @@ export default function AssetsPage() {
     setSyncingSBI(false);
   };
 
+  // Vercel から static JSON で SBI を読み込む (local cron で更新されたもの)
+  const syncFromSBIStatic = async () => {
+    setSyncingSBI(true);
+    setStatusMsg("GitHub から SBI データ読込中...");
+    try {
+      const res = await fetch("/api/sbi-static");
+      const data = await res.json();
+      if (!data.connected) {
+        setStatusMsg(`SBI static 未取得: ${data.error ?? "不明"}`);
+        setSyncingSBI(false);
+        return;
+      }
+      const mapped: Holding[] = (data.holdings ?? []).map((h: { code: string; name: string; quantity: number; avgPrice: number; currentPrice: number; marketValue: number; pnl: number; pnlPercent: number; currency?: string }) => ({
+        source: "sbi-auto",
+        code: h.code,
+        name: h.name,
+        quantity: h.quantity,
+        avgPrice: h.avgPrice,
+        currentPrice: h.currentPrice,
+        marketValue: h.marketValue,
+        pnl: h.pnl,
+        pnlPercent: h.pnlPercent,
+        category: "株式",
+        currency: h.currency || "JPY",
+      }));
+      setHoldings((prev) => {
+        const nonSbi = prev.filter((h) => h.source !== "sbi-auto" && h.source !== "sbi-csv");
+        return [...nonSbi, ...mapped];
+      });
+      const now = new Date().toISOString();
+      setLastSyncTime(now);
+      localStorage.setItem("investment-app-last-sync", now);
+      setStatusMsg(`SBI (static): ${data.holdings?.length ?? 0} 銘柄、総資産 ¥${data.totalAssets?.toLocaleString() ?? "?"} を読込`);
+    } catch (e) {
+      setStatusMsg(`SBI static 失敗: ${e instanceof Error ? e.message : "unknown"}`);
+    }
+    setSyncingSBI(false);
+  };
+
   // Sync from Zaim (MF が不正アクセス対策で使えなくなった代替)
   const syncFromZaim = async () => {
     setSyncingZaim(true);
@@ -1110,18 +1149,24 @@ export default function AssetsPage() {
               <p className="text-xs text-zinc-400 mb-4">
                 必要な環境変数: <code className="text-cyan-400">SBI_USER_ID</code>, <code className="text-cyan-400">SBI_PASSWORD</code>
               </p>
-              <button
-                onClick={syncFromSBI}
-                disabled={syncingSBI}
-                className="w-full py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
-              >
-                {syncingSBI ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="animate-spin inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
-                    取得中...
-                  </span>
-                ) : "SBI証券から取得"}
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={syncFromSBI}
+                  disabled={syncingSBI}
+                  className="py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors"
+                  title="local で SBI に直接ログインして取得 (local 実行のみ)"
+                >
+                  {syncingSBI ? "取得中..." : "Live 取得 (local)"}
+                </button>
+                <button
+                  onClick={syncFromSBIStatic}
+                  disabled={syncingSBI}
+                  className="py-2 bg-blue-700/50 hover:bg-blue-600/70 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors"
+                  title="GitHub から cron 同期済みデータを読込 (Vercel から動く)"
+                >
+                  Static 読込 (cron)
+                </button>
+              </div>
             </div>
 
             {/* Zaim Card */}

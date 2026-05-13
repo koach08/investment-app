@@ -50,3 +50,6 @@ scripts/AppIcon.icns
 
 # claude code
 .claude/
+
+# SBI holdings (cron で更新、Vercel から read)
+!data/sbi-holdings.json
