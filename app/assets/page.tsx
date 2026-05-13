@@ -112,6 +112,7 @@ export default function AssetsPage() {
   // Sync state
   const [syncingSBI, setSyncingSBI] = useState(false);
   const [syncingMF, setSyncingMF] = useState(false);
+  const [syncingZaim, setSyncingZaim] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
 
   // Price refresh state
@@ -291,6 +292,83 @@ export default function AssetsPage() {
       setStatusMsg("SBI証券との通信に失敗しました");
     }
     setSyncingSBI(false);
+  };
+
+  // Sync from Zaim (MF が不正アクセス対策で使えなくなった代替)
+  const syncFromZaim = async () => {
+    setSyncingZaim(true);
+    setStatusMsg("Zaim から資産情報を取得中...");
+    try {
+      const res = await fetch("/api/zaim/portfolio");
+      const data = await res.json();
+      if (!data.connected) {
+        setStatusMsg(`Zaim 未連携: ${data.error ?? "不明"}`);
+        setSyncingZaim(false);
+        return;
+      }
+      const accounts = data.accounts as { id: number; name: string; amount: number; currency: string }[];
+      if (accounts.length === 0) {
+        setStatusMsg("Zaim: 口座データなし (Zaim に銀行/証券連携を追加してください)");
+        setSyncingZaim(false);
+        return;
+      }
+
+      // 口座を holdings にマップ (各口座 = 現金/評価額として扱う)
+      const mapped: Holding[] = accounts
+        .filter((a) => a.amount > 0)
+        .map((a) => {
+          const n = a.name.toLowerCase();
+          let category = "現金・預金";
+          if (n.includes("証券") || n.includes("株") || n.includes("sbi") || n.includes("rakuten") || n.includes("matsui")) category = "株式";
+          else if (n.includes("暗号") || n.includes("crypto") || n.includes("bitflyer") || n.includes("coincheck") || n.includes("binance")) category = "暗号資産";
+          else if (n.includes("投信") || n.includes("信託") || n.includes("idecu") || n.includes("nisa")) category = "投資信託";
+          else if (n.includes("ポイント") || n.includes("point")) category = "ポイント";
+          return {
+            source: "zaim-auto",
+            code: "",
+            name: a.name,
+            quantity: 1,
+            avgPrice: 0,
+            currentPrice: a.amount,
+            marketValue: a.amount,
+            pnl: 0,
+            pnlPercent: 0,
+            category,
+            currency: a.currency || "JPY",
+          };
+        });
+
+      // Merge: replace zaim holdings, keep non-zaim
+      setHoldings((prev) => {
+        const nonZaim = prev.filter((h) => h.source !== "zaim-auto" && h.source !== "mf-auto" && h.source !== "mf-csv");
+        return [...nonZaim, ...mapped];
+      });
+
+      // Timeline 追加
+      const total = data.totalJPY;
+      const today = new Date().toISOString().substring(0, 10);
+      let cash = 0, stocks = 0, funds = 0, points = 0, other = 0;
+      for (const h of mapped) {
+        if (h.category === "現金・預金") cash += h.marketValue;
+        else if (h.category === "株式") stocks += h.marketValue;
+        else if (h.category === "投資信託") funds += h.marketValue;
+        else if (h.category === "ポイント") points += h.marketValue;
+        else other += h.marketValue;
+      }
+      const todayRecord: TimelineRecord = { date: today, total, cash, stocks, margin: 0, funds, points, other, debt: 0 };
+      setTimeline((prev) => {
+        const filtered = prev.filter((t) => t.date !== today);
+        return [...filtered, todayRecord].sort((a, b) => a.date.localeCompare(b.date));
+      });
+
+      const now = new Date().toISOString();
+      setLastSyncTime(now);
+      localStorage.setItem("investment-app-last-sync", now);
+      setStatusMsg(`Zaim: 総資産 ¥${total.toLocaleString()} を取得 (${accounts.length} 口座)`);
+    } catch (e) {
+      setStatusMsg(`Zaim 通信失敗: ${e instanceof Error ? e.message : "unknown"}`);
+    }
+    setSyncingZaim(false);
   };
 
   // Sync from MoneyForward
@@ -693,25 +771,25 @@ export default function AssetsPage() {
           {/* Sync status bar */}
           <div className="flex items-center justify-between">
             <div className="text-xs text-zinc-500">
-              {syncingMF ? (
+              {syncingZaim ? (
                 <span className="text-yellow-400 flex items-center gap-1.5">
                   <span className="animate-spin inline-block w-3 h-3 border-2 border-yellow-500/30 border-t-yellow-400 rounded-full" />
-                  マネーフォワードから取得中...
+                  Zaim から取得中...
                 </span>
               ) : lastSyncTime ? (
                 `最終同期: ${new Date(lastSyncTime).toLocaleString("ja-JP")}`
               ) : "未同期"}
-              {!syncingMF && lastPriceRefresh && (
+              {!syncingZaim && lastPriceRefresh && (
                 <span className="ml-3">| 価格更新: {new Date(lastPriceRefresh).toLocaleString("ja-JP")}</span>
               )}
             </div>
             <div className="flex gap-2">
               <button
-                onClick={syncFromMF}
-                disabled={syncingMF}
+                onClick={syncFromZaim}
+                disabled={syncingZaim}
                 className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
               >
-                {syncingMF ? "取得中..." : "MF同期"}
+                {syncingZaim ? "取得中..." : "Zaim 同期"}
               </button>
               <button
                 onClick={refreshPrices}
