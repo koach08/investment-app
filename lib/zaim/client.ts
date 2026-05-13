@@ -1,18 +1,10 @@
 /**
- * Zaim API クライアント (OAuth 1.0a)
+ * Zaim API クライアント (OAuth 1.0a, 手書き署名)
  *
- * 個人開発者の Consumer Key/Secret + ユーザーの Access Token/Secret で
- * Zaim の家計/口座データを取得する。
- *
- * Endpoints:
- *  - https://api.zaim.net/v2/auth/request  → request token
- *  - https://auth.zaim.net/users/auth      → authorize (ブラウザ)
- *  - https://api.zaim.net/v2/auth/access   → access token
- *  - https://api.zaim.net/v2/home/account  → 口座一覧
- *  - https://api.zaim.net/v2/home/money    → 入出金履歴
+ * oauth-1.0a パッケージ経由で 401 Consumer not found が出たので、
+ * RFC 5849 に従って手書き実装。oauth_callback を確実に header に入れる。
  */
 
-import OAuth from "oauth-1.0a";
 import crypto from "crypto";
 
 const REQUEST_TOKEN_URL = "https://api.zaim.net/v2/auth/request";
@@ -20,19 +12,81 @@ const ACCESS_TOKEN_URL = "https://api.zaim.net/v2/auth/access";
 const AUTH_URL = "https://auth.zaim.net/users/auth";
 const API_BASE = "https://api.zaim.net/v2";
 
-function buildOAuth(): OAuth {
+/** RFC 3986 準拠 URL エンコード (encodeURIComponent では足りない !'()* も変換) */
+function rfc3986Encode(str: string): string {
+  return encodeURIComponent(str).replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
+  );
+}
+
+interface SigningOptions {
+  /** OAuth params (oauth_callback, oauth_token, oauth_verifier 等) */
+  oauthExtra?: Record<string, string>;
+  /** リクエスト body / query の追加パラメータ (signature 計算に含める) */
+  bodyParams?: Record<string, string>;
+  /** Access Token (Step 2 以降) */
+  tokenSecret?: string;
+}
+
+function buildAuthHeader(
+  method: "GET" | "POST",
+  url: string,
+  consumerKey: string,
+  consumerSecret: string,
+  opts: SigningOptions = {}
+): string {
+  const oauthParams: Record<string, string> = {
+    oauth_consumer_key: consumerKey,
+    oauth_nonce: crypto.randomBytes(16).toString("hex"),
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
+    oauth_version: "1.0",
+    ...(opts.oauthExtra ?? {}),
+  };
+
+  // signature base string 用に全パラメータを集約 (body + query + oauth)
+  const u = new URL(url);
+  const queryParams: Record<string, string> = {};
+  for (const [k, v] of u.searchParams.entries()) queryParams[k] = v;
+
+  const allParams: Record<string, string> = {
+    ...queryParams,
+    ...(opts.bodyParams ?? {}),
+    ...oauthParams,
+  };
+
+  // RFC 5849 Section 3.4.1: ソート → エンコード → join
+  const sortedKeys = Object.keys(allParams).sort();
+  const paramString = sortedKeys
+    .map((k) => `${rfc3986Encode(k)}=${rfc3986Encode(allParams[k])}`)
+    .join("&");
+
+  const baseUrl = `${u.protocol}//${u.host}${u.pathname}`;
+  const baseString = [
+    method.toUpperCase(),
+    rfc3986Encode(baseUrl),
+    rfc3986Encode(paramString),
+  ].join("&");
+
+  const signingKey = `${rfc3986Encode(consumerSecret)}&${rfc3986Encode(opts.tokenSecret ?? "")}`;
+  const signature = crypto.createHmac("sha1", signingKey).update(baseString).digest("base64");
+
+  oauthParams.oauth_signature = signature;
+
+  // Authorization header (oauth_* のみ、ソート不要だが慣習で)
+  const headerParts = Object.keys(oauthParams)
+    .sort()
+    .map((k) => `${rfc3986Encode(k)}="${rfc3986Encode(oauthParams[k])}"`);
+
+  return "OAuth " + headerParts.join(", ");
+}
+
+function getCreds(): { key: string; secret: string } {
   const key = process.env.ZAIM_CONSUMER_KEY;
   const secret = process.env.ZAIM_CONSUMER_SECRET;
-  if (!key || !secret) {
-    throw new Error("ZAIM_CONSUMER_KEY / ZAIM_CONSUMER_SECRET 未設定");
-  }
-  return new OAuth({
-    consumer: { key, secret },
-    signature_method: "HMAC-SHA1",
-    hash_function(base_string: string, key: string) {
-      return crypto.createHmac("sha1", key).update(base_string).digest("base64");
-    },
-  });
+  if (!key || !secret) throw new Error("ZAIM_CONSUMER_KEY / ZAIM_CONSUMER_SECRET 未設定");
+  return { key, secret };
 }
 
 function parseFormResponse(text: string): Record<string, string> {
@@ -44,23 +98,20 @@ function parseFormResponse(text: string): Record<string, string> {
   return out;
 }
 
-/** Step 1: request token を取得 + 認証 URL 生成 */
+/** Step 1: request token */
 export async function getRequestToken(callbackUrl: string): Promise<{
   requestToken: string;
   requestSecret: string;
   authorizeUrl: string;
 }> {
-  const oauth = buildOAuth();
-  const req = { url: REQUEST_TOKEN_URL, method: "POST", data: { oauth_callback: callbackUrl } };
-  const authHeader = oauth.toHeader(oauth.authorize(req));
+  const { key, secret } = getCreds();
+  const authHeader = buildAuthHeader("POST", REQUEST_TOKEN_URL, key, secret, {
+    oauthExtra: { oauth_callback: callbackUrl },
+  });
 
   const res = await fetch(REQUEST_TOKEN_URL, {
     method: "POST",
-    headers: {
-      ...authHeader,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: `oauth_callback=${encodeURIComponent(callbackUrl)}`,
+    headers: { Authorization: authHeader },
   });
 
   if (!res.ok) {
@@ -83,24 +134,21 @@ export async function getRequestToken(callbackUrl: string): Promise<{
   };
 }
 
-/** Step 2: callback で受け取った verifier を使い access token に交換 */
+/** Step 2: access token */
 export async function getAccessToken(
   requestToken: string,
   requestSecret: string,
   oauthVerifier: string,
 ): Promise<{ accessToken: string; accessSecret: string }> {
-  const oauth = buildOAuth();
-  const token = { key: requestToken, secret: requestSecret };
-  const req = { url: ACCESS_TOKEN_URL, method: "POST", data: { oauth_verifier: oauthVerifier } };
-  const authHeader = oauth.toHeader(oauth.authorize(req, token));
+  const { key, secret } = getCreds();
+  const authHeader = buildAuthHeader("POST", ACCESS_TOKEN_URL, key, secret, {
+    oauthExtra: { oauth_token: requestToken, oauth_verifier: oauthVerifier },
+    tokenSecret: requestSecret,
+  });
 
   const res = await fetch(ACCESS_TOKEN_URL, {
     method: "POST",
-    headers: {
-      ...authHeader,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: `oauth_verifier=${encodeURIComponent(oauthVerifier)}`,
+    headers: { Authorization: authHeader },
   });
 
   if (!res.ok) {
@@ -119,24 +167,28 @@ export async function getAccessToken(
   return { accessToken, accessSecret };
 }
 
-/** 認証済みリクエスト (任意エンドポイント) */
 export async function callZaim<T = unknown>(
   path: string,
   accessToken: string,
   accessSecret: string,
   params: Record<string, string | number> = {},
 ): Promise<T> {
-  const oauth = buildOAuth();
-  const token = { key: accessToken, secret: accessSecret };
+  const { key, secret } = getCreds();
   const url = new URL(`${API_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
 
-  const req = { url: url.toString(), method: "GET", data: {} };
-  const authHeader = oauth.toHeader(oauth.authorize(req, token));
+  const queryParams: Record<string, string> = {};
+  for (const [k, v] of url.searchParams.entries()) queryParams[k] = v;
+
+  const authHeader = buildAuthHeader("GET", url.toString(), key, secret, {
+    oauthExtra: { oauth_token: accessToken },
+    bodyParams: queryParams,
+    tokenSecret: accessSecret,
+  });
 
   const res = await fetch(url.toString(), {
     method: "GET",
-    headers: { ...authHeader },
+    headers: { Authorization: authHeader },
   });
 
   if (!res.ok) {
@@ -147,27 +199,21 @@ export async function callZaim<T = unknown>(
   return await res.json();
 }
 
-// =====================================================================
-// 便利な型 + 高レベル関数
-// =====================================================================
-
 export interface ZaimAccount {
   id: number;
   name: string;
-  active: number; // 1 or 0
+  active: number;
   parent_account_id: number;
   modified: string;
   sort: number;
-  /** Zaim 内で管理する残高 (なければ undefined) */
   amount?: number;
   currency_code?: string;
 }
 
-/** 口座一覧取得 */
 export async function fetchAccounts(
   accessToken: string,
   accessSecret: string,
 ): Promise<ZaimAccount[]> {
   const data = await callZaim<{ accounts: ZaimAccount[] }>("/home/account", accessToken, accessSecret);
-  return data.accounts.filter(a => a.active === 1);
+  return data.accounts.filter((a) => a.active === 1);
 }
