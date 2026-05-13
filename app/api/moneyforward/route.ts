@@ -1,18 +1,23 @@
 import { NextResponse } from "next/server";
-import { scrapeMoneyForward } from "@/lib/scrapers/moneyforward";
 
+/**
+ * MF スクレイピングは local 専用 (Playwright が必要)。
+ * 本番 (Vercel) では env 未設定で 503 を返す。
+ * 動的 import なので playwright-core はバンドルされない。
+ */
 export async function POST() {
   const email = process.env.MF_EMAIL;
   const password = process.env.MF_PASSWORD;
 
   if (!email || !password) {
     return NextResponse.json(
-      { error: "マネーフォワードのログイン情報が.env.localに設定されていません。MF_EMAILとMF_PASSWORDを設定してください。" },
-      { status: 400 }
+      { error: "MF_EMAIL/MF_PASSWORD 未設定。本ルートは local 専用 (Playwright 必須)。" },
+      { status: 503 }
     );
   }
 
   try {
+    const { scrapeMoneyForward } = await import("@/lib/scrapers/moneyforward");
     const account = await scrapeMoneyForward(email, password);
     return NextResponse.json(account);
   } catch (e) {

@@ -36,6 +36,7 @@ function DetailContent() {
     { title: string; source: string; url: string; publishedAt: string }[]
   >([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // AI analysis state
   const [engineResults, setEngineResults] = useState<EngineResult[]>([]);
@@ -46,13 +47,27 @@ function DetailContent() {
   const fetchData = useCallback(async () => {
     if (!ticker) return;
     setLoading(true);
+    setError(null);
+    setData(null);
     try {
       const [marketRes, newsRes] = await Promise.all([
         fetch(`/api/market?ticker=${encodeURIComponent(ticker)}&period=${period}`),
         fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`),
       ]);
+
+      if (!marketRes.ok) {
+        const body = await marketRes.json().catch(() => ({}));
+        const hint = /^\d{4}$/.test(ticker)
+          ? `日本株は '.T' 付き（例: ${ticker}.T）で検索してください。`
+          : "ティッカー記号を確認してください（米株: AAPL / 日本株: 7203.T / 独株: VOW3.DE）。";
+        setError(`${body.error || `データ取得失敗 (HTTP ${marketRes.status})`} — ${hint}`);
+        setNews([]);
+        setLoading(false);
+        return;
+      }
+
       const marketData = await marketRes.json();
-      const newsData = await newsRes.json();
+      const newsData = await newsRes.json().catch(() => ({ news: [] }));
 
       if (marketData.prices) {
         setData({
@@ -60,13 +75,23 @@ function DetailContent() {
           prices: marketData.prices,
           currency: marketData.currency,
         });
+      } else {
+        setError("価格データが空でした。期間や銘柄を変えて再試行してください。");
       }
       setNews(newsData.news || []);
-    } catch {
-      setData(null);
+    } catch (e) {
+      setError(e instanceof Error ? `通信エラー: ${e.message}` : "通信エラーが発生しました。");
     }
     setLoading(false);
   }, [ticker, period]);
+
+  const submitSearch = () => {
+    const raw = inputTicker.trim();
+    if (!raw) return;
+    const normalized = /^\d{4}$/.test(raw) ? `${raw}.T` : raw;
+    setInputTicker(normalized);
+    setTicker(normalized);
+  };
 
   useEffect(() => {
     fetchData();
@@ -150,8 +175,8 @@ function DetailContent() {
           type="text"
           value={inputTicker}
           onChange={(e) => setInputTicker(e.target.value.toUpperCase())}
-          onKeyDown={(e) => e.key === "Enter" && setTicker(inputTicker)}
-          placeholder="ティッカー（例: 7203.T, AAPL）"
+          onKeyDown={(e) => e.key === "Enter" && submitSearch()}
+          placeholder="ティッカー（例: 7203.T, AAPL / 4桁は自動で .T 付与）"
           className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
         />
         <select
@@ -166,7 +191,7 @@ function DetailContent() {
           <option value="5y">5年</option>
         </select>
         <button
-          onClick={() => setTicker(inputTicker)}
+          onClick={submitSearch}
           className="px-6 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium"
         >
           検索
@@ -175,6 +200,12 @@ function DetailContent() {
 
       {loading && (
         <div className="text-center text-zinc-500 py-12">データ取得中...</div>
+      )}
+
+      {error && !loading && (
+        <div className="border border-red-900/60 bg-red-950/30 text-red-200 rounded-lg px-4 py-3 mb-6 text-sm">
+          {error}
+        </div>
       )}
 
       {data && !loading && (
