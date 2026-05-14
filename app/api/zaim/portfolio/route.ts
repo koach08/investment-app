@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fetchAccounts } from "@/lib/zaim/client";
+import { fetchAccounts, fetchAccountBalances } from "@/lib/zaim/client";
 
 /** Zaim から総資産 + 口座内訳取得 */
 export async function GET() {
@@ -13,18 +13,27 @@ export async function GET() {
   }
 
   try {
-    const accounts = await fetchAccounts(accessToken, accessSecret);
-    const total = accounts.reduce((s, a) => s + (a.amount ?? 0), 0);
+    // accounts (メタ) + balances (money records から計算) を並列取得
+    const [accounts, balances] = await Promise.all([
+      fetchAccounts(accessToken, accessSecret),
+      fetchAccountBalances(accessToken, accessSecret),
+    ]);
+
+    const enriched = accounts.map((a) => ({
+      id: a.id,
+      name: a.name,
+      // money records から計算した残高 (365日分の差し引き)
+      amount: balances.get(a.id) ?? 0,
+      currency: a.currency_code ?? "JPY",
+    }));
+    const total = enriched.reduce((s, a) => s + a.amount, 0);
+
     return NextResponse.json({
       connected: true,
       totalJPY: total,
-      accountCount: accounts.length,
-      accounts: accounts.map((a) => ({
-        id: a.id,
-        name: a.name,
-        amount: a.amount ?? 0,
-        currency: a.currency_code ?? "JPY",
-      })),
+      accountCount: enriched.length,
+      accounts: enriched,
+      note: "残高は money records 365日分から計算。初期残高未設定の場合は実残高と乖離あり。",
     });
   } catch (e) {
     return NextResponse.json(

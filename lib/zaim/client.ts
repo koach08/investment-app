@@ -217,3 +217,56 @@ export async function fetchAccounts(
   const data = await callZaim<{ accounts: ZaimAccount[] }>("/home/account", accessToken, accessSecret);
   return data.accounts.filter((a) => a.active === 1);
 }
+
+interface ZaimMoneyRecord {
+  id: number;
+  mode: "income" | "payment" | "transfer";
+  amount: number;
+  from_account_id?: number; // payment / outgoing transfer
+  to_account_id?: number;   // income / incoming transfer
+  date: string;
+}
+
+/** 口座別残高を money records から集計. 365日 さかのぼり. */
+export async function fetchAccountBalances(
+  accessToken: string,
+  accessSecret: string,
+): Promise<Map<number, number>> {
+  const balances = new Map<number, number>();
+  const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+  const endDate = new Date().toISOString().split("T")[0];
+
+  // ページング (Zaim の money は 1 リクエスト最大 100 件)
+  for (let page = 1; page <= 50; page++) {
+    const data = await callZaim<{ money: ZaimMoneyRecord[] }>("/home/money", accessToken, accessSecret, {
+      mapping: 1,
+      start_date: startDate,
+      end_date: endDate,
+      limit: 100,
+      page,
+    }).catch(() => ({ money: [] as ZaimMoneyRecord[] }));
+
+    if (!data.money || data.money.length === 0) break;
+
+    for (const r of data.money) {
+      const amount = Number(r.amount ?? 0);
+      // income → to_account_id にプラス
+      if (r.mode === "income" && r.to_account_id) {
+        balances.set(r.to_account_id, (balances.get(r.to_account_id) ?? 0) + amount);
+      }
+      // payment → from_account_id にマイナス
+      if (r.mode === "payment" && r.from_account_id) {
+        balances.set(r.from_account_id, (balances.get(r.from_account_id) ?? 0) - amount);
+      }
+      // transfer → from -, to +
+      if (r.mode === "transfer") {
+        if (r.from_account_id) balances.set(r.from_account_id, (balances.get(r.from_account_id) ?? 0) - amount);
+        if (r.to_account_id) balances.set(r.to_account_id, (balances.get(r.to_account_id) ?? 0) + amount);
+      }
+    }
+
+    if (data.money.length < 100) break;
+  }
+
+  return balances;
+}
