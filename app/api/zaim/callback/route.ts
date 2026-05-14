@@ -51,8 +51,8 @@ ZAIM_ACCESS_SECRET=${accessSecret}</pre>
 
 <h2>2. ターミナルでこのコマンド実行</h2>
 <pre>cd ~/investment-app
-echo "${accessToken}" | vercel env add ZAIM_ACCESS_TOKEN production
-echo "${accessSecret}" | vercel env add ZAIM_ACCESS_SECRET production
+printf "${accessToken}" | vercel env add ZAIM_ACCESS_TOKEN production
+printf "${accessSecret}" | vercel env add ZAIM_ACCESS_SECRET production
 vercel --prod --yes</pre>
 
 <h2>3. 取得できた口座 (動作確認)</h2>
