@@ -200,7 +200,8 @@ export default function AssetsPage() {
         const lastSync = localStorage.getItem("investment-app-last-sync");
         const oneHourMs = 60 * 60 * 1000;
         if (!lastSync || Date.now() - new Date(lastSync).getTime() > oneHourMs) {
-          syncFromMF();
+          // MF は不正アクセス対策で停止 → Zaim 自動同期に切替
+          syncFromZaim();
         }
       }
     });
@@ -516,7 +517,7 @@ export default function AssetsPage() {
   // Sync both
   const syncAll = async () => {
     setStatusMsg("SBI証券 + マネーフォワードから同時取得中...");
-    await Promise.all([syncFromSBI(), syncFromMF()]);
+    await Promise.all([syncFromSBI(), syncFromZaim()]);
     setStatusMsg("同期完了");
   };
 
