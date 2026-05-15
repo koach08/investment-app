@@ -200,8 +200,7 @@ export default function AssetsPage() {
         const lastSync = localStorage.getItem("investment-app-last-sync");
         const oneHourMs = 60 * 60 * 1000;
         if (!lastSync || Date.now() - new Date(lastSync).getTime() > oneHourMs) {
-          // MF は不正アクセス対策で停止 → Zaim 自動同期に切替
-          syncFromZaim();
+          syncFromMF();
         }
       }
     });
@@ -517,7 +516,7 @@ export default function AssetsPage() {
   // Sync both
   const syncAll = async () => {
     setStatusMsg("SBI証券 + マネーフォワードから同時取得中...");
-    await Promise.all([syncFromSBI(), syncFromZaim()]);
+    await Promise.all([syncFromSBI(), syncFromMF(), syncFromZaim()]);
     setStatusMsg("同期完了");
   };
 
@@ -811,23 +810,30 @@ export default function AssetsPage() {
           {/* Sync status bar */}
           <div className="flex items-center justify-between">
             <div className="text-xs text-zinc-500">
-              {syncingZaim ? (
+              {(syncingMF || syncingZaim) ? (
                 <span className="text-yellow-400 flex items-center gap-1.5">
                   <span className="animate-spin inline-block w-3 h-3 border-2 border-yellow-500/30 border-t-yellow-400 rounded-full" />
-                  Zaim から取得中...
+                  {syncingMF ? "MF" : "Zaim"} から取得中...
                 </span>
               ) : lastSyncTime ? (
                 `最終同期: ${new Date(lastSyncTime).toLocaleString("ja-JP")}`
               ) : "未同期"}
-              {!syncingZaim && lastPriceRefresh && (
+              {!(syncingMF || syncingZaim) && lastPriceRefresh && (
                 <span className="ml-3">| 価格更新: {new Date(lastPriceRefresh).toLocaleString("ja-JP")}</span>
               )}
             </div>
             <div className="flex gap-2">
               <button
+                onClick={syncFromMF}
+                disabled={syncingMF}
+                className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+              >
+                {syncingMF ? "取得中..." : "MF 同期"}
+              </button>
+              <button
                 onClick={syncFromZaim}
                 disabled={syncingZaim}
-                className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+                className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
               >
                 {syncingZaim ? "取得中..." : "Zaim 同期"}
               </button>
@@ -1115,11 +1121,8 @@ export default function AssetsPage() {
           <div className="border border-zinc-800 rounded-lg p-4">
             <h3 className="text-sm font-semibold text-zinc-400 mb-2">自動連携について</h3>
             <p className="text-sm text-zinc-300 leading-relaxed">
-              <strong>Zaim API</strong> 経由で総資産を取得 (家計簿アプリ Zaim と連携した銀行/証券口座の残高)。
-              <strong>SBI 証券</strong>は別途スクレイピングで保有銘柄詳細を取得 (ローカル環境のみ)。
-            </p>
-            <p className="text-xs text-zinc-500 mt-2">
-              ※ MoneyForward は不正アクセス対策で API/スクレイピング不可となったため Zaim に移行。
+              <strong>SBI 証券</strong>・<strong>MoneyForward</strong>・<strong>Zaim</strong> の 3 系統に対応。
+              SBI/MF はスクレイピング (local 専用)、Zaim は公式 API (本番でも動作)。
             </p>
             {lastSyncTime && (
               <p className="text-xs text-zinc-500 mt-2">
@@ -1130,14 +1133,14 @@ export default function AssetsPage() {
 
           {/* Sync all button */}
           <button
-            onClick={async () => { await Promise.all([syncFromSBI(), syncFromZaim()]); setStatusMsg("同期完了"); }}
-            disabled={syncingSBI || syncingZaim}
+            onClick={syncAll}
+            disabled={syncingSBI || syncingMF || syncingZaim}
             className="w-full py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 disabled:opacity-50 rounded-lg text-sm font-bold transition-all"
           >
-            {syncingSBI || syncingZaim ? "同期中..." : "SBI + Zaim 一括同期"}
+            {(syncingSBI || syncingMF || syncingZaim) ? "同期中..." : "SBI + MF + Zaim 一括同期"}
           </button>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* SBI Card */}
             <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/50">
               <div className="flex items-center gap-3 mb-3">
@@ -1148,46 +1151,72 @@ export default function AssetsPage() {
                 </div>
               </div>
               <p className="text-xs text-zinc-400 mb-4">
-                必要な環境変数: <code className="text-cyan-400">SBI_USER_ID</code>, <code className="text-cyan-400">SBI_PASSWORD</code>
+                必要: <code className="text-cyan-400">SBI_USER_ID</code> / <code className="text-cyan-400">SBI_PASSWORD</code>
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={syncFromSBI}
                   disabled={syncingSBI}
                   className="py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors"
-                  title="local で SBI に直接ログインして取得 (local 実行のみ)"
+                  title="local で SBI に直接ログインして取得"
                 >
-                  {syncingSBI ? "取得中..." : "Live 取得 (local)"}
+                  {syncingSBI ? "取得中..." : "Live (local)"}
                 </button>
                 <button
                   onClick={syncFromSBIStatic}
                   disabled={syncingSBI}
                   className="py-2 bg-blue-700/50 hover:bg-blue-600/70 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors"
-                  title="GitHub から cron 同期済みデータを読込 (Vercel から動く)"
+                  title="GitHub から cron 同期済みデータを読込"
                 >
-                  Static 読込 (cron)
+                  Static (cron)
                 </button>
               </div>
+            </div>
+
+            {/* MoneyForward Card */}
+            <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/50">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-lg bg-green-600/20 flex items-center justify-center text-xl">M</div>
+                <div>
+                  <h4 className="font-semibold">MoneyForward</h4>
+                  <p className="text-xs text-zinc-500">資産全体を取得 (local 専用)</p>
+                </div>
+              </div>
+              <p className="text-xs text-zinc-400 mb-4">
+                必要: <code className="text-cyan-400">MF_EMAIL</code> / <code className="text-cyan-400">MF_PASSWORD</code>
+              </p>
+              <button
+                onClick={syncFromMF}
+                disabled={syncingMF}
+                className="w-full py-2 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+              >
+                {syncingMF ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="animate-spin inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
+                    取得中...
+                  </span>
+                ) : "MF から取得"}
+              </button>
             </div>
 
             {/* Zaim Card */}
             <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/50">
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-lg bg-green-600/20 flex items-center justify-center text-xl">Z</div>
+                <div className="w-10 h-10 rounded-lg bg-emerald-600/20 flex items-center justify-center text-xl">Z</div>
                 <div>
                   <h4 className="font-semibold">Zaim</h4>
-                  <p className="text-xs text-zinc-500">家計簿アプリから総資産取得 (公式 API)</p>
+                  <p className="text-xs text-zinc-500">家計簿 API (本番動作)</p>
                 </div>
               </div>
               <p className="text-xs text-zinc-400 mb-4">
-                必要な環境変数: <code className="text-cyan-400">ZAIM_CONSUMER_KEY/SECRET</code> + <code className="text-cyan-400">ZAIM_ACCESS_TOKEN/SECRET</code>
+                必要: <code className="text-cyan-400">ZAIM_*</code> (4個)
                 <br />
-                未設定の場合: <a href="/api/zaim/auth" className="text-cyan-400 underline">/api/zaim/auth</a> で OAuth 認証
+                未認証時: <a href="/api/zaim/auth" className="text-cyan-400 underline">/api/zaim/auth</a>
               </p>
               <button
                 onClick={syncFromZaim}
                 disabled={syncingZaim}
-                className="w-full py-2 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
               >
                 {syncingZaim ? (
                   <span className="flex items-center justify-center gap-2">
@@ -1203,19 +1232,15 @@ export default function AssetsPage() {
           <div className="border border-zinc-800 rounded-lg p-4">
             <h3 className="text-sm font-semibold text-zinc-400 mb-3">環境変数の設定方法</h3>
             <div className="bg-zinc-950 rounded p-3 font-mono text-xs text-zinc-300 leading-relaxed">
-              <div className="text-zinc-500 mb-1"># Vercel env (or .env.local) に以下を追加</div>
-              <div className="text-zinc-500"># Zaim (本番で動作)</div>
-              <div><span className="text-cyan-400">ZAIM_CONSUMER_KEY</span>=dev.zaim.net で取得</div>
-              <div><span className="text-cyan-400">ZAIM_CONSUMER_SECRET</span>=同上</div>
-              <div><span className="text-cyan-400">ZAIM_ACCESS_TOKEN</span>=/api/zaim/auth で取得</div>
-              <div><span className="text-cyan-400">ZAIM_ACCESS_SECRET</span>=同上</div>
-              <div className="mt-3 text-zinc-500"># SBI (local 専用、Playwright 必須)</div>
-              <div><span className="text-cyan-400">SBI_USER_ID</span>=SBI のユーザー ID</div>
-              <div><span className="text-cyan-400">SBI_PASSWORD</span>=SBI のパスワード</div>
+              <div className="text-zinc-500 mb-1"># SBI / MF (local Playwright 専用)</div>
+              <div><span className="text-cyan-400">SBI_USER_ID</span>=SBIユーザーID</div>
+              <div><span className="text-cyan-400">SBI_PASSWORD</span>=SBIパスワード</div>
+              <div><span className="text-cyan-400">MF_EMAIL</span>=マネフォメール</div>
+              <div><span className="text-cyan-400">MF_PASSWORD</span>=マネフォパスワード</div>
+              <div className="mt-3 text-zinc-500"># Zaim (本番でも動作、OAuth 1.0a)</div>
+              <div><span className="text-cyan-400">ZAIM_CONSUMER_KEY/SECRET</span>=dev.zaim.net で取得</div>
+              <div><span className="text-cyan-400">ZAIM_ACCESS_TOKEN/SECRET</span>=/api/zaim/auth で取得</div>
             </div>
-            <p className="text-xs text-zinc-500 mt-2">
-              ※ Zaim は OAuth 1.0a、SBI はサーバーサイド Playwright スクレイピング (local 環境のみ)。
-            </p>
           </div>
         </div>
       )}
