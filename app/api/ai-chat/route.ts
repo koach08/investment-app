@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { STANDARD } from "@/lib/model-config";
+import { realtimeMultiPrices, realtimeMarketQuery } from "@/lib/perplexity-realtime";
 
 interface HoldingInput {
   code?: string;
@@ -30,10 +31,12 @@ export async function POST(request: NextRequest) {
 
   // Build holdings context
   let holdingsInfo = "";
+  let topHoldings: HoldingInput[] = [];
   if (context?.holdings && context.holdings.length > 0) {
     const sorted = [...context.holdings]
       .sort((a: HoldingInput, b: HoldingInput) => (b.marketValue || 0) - (a.marketValue || 0))
       .slice(0, 15);
+    topHoldings = sorted;
     holdingsInfo = `
 ## ユーザーの保有銘柄
 ${sorted.map((h: HoldingInput) => {
@@ -46,6 +49,53 @@ ${sorted.map((h: HoldingInput) => {
   const pnlPct = h.pnlPercent || 0;
   return `- ${ticker}（${name}）: ${qty}株 / 取得${avg.toLocaleString()}円 / 現在${cur.toLocaleString()}円 / 損益${pnl >= 0 ? "+" : ""}${pnl.toLocaleString()}円(${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)`;
 }).join("\n")}`;
+  }
+
+  // === Perplexity でリアルタイム情報取得 (株価/最新ニュース) ===
+  // ユーザー直近メッセージから ticker 抽出 OR 「現在/今/最新/株価」キーワードあれば実行
+  let realtimeInfo = "";
+  const lastUserMsg = [...messages].reverse().find((m: { role: string }) => m.role === "user")?.content as string | undefined;
+  if (lastUserMsg && process.env.PERPLEXITY_API_KEY) {
+    const triggerKeywords = ["現在", "今の", "今日", "最新", "リアルタイム", "株価", "価格", "値段", "いくら"];
+    const hasTrigger = triggerKeywords.some(k => lastUserMsg.includes(k));
+    // メッセージから ticker 抽出 (例: "7203.T", "7203", "AAPL")
+    const tickerMatches = lastUserMsg.match(/\b\d{4}\.T\b|\b[A-Z]{2,5}\b/g) || [];
+    const explicitTickers = [...new Set(tickerMatches.map(t => t.endsWith(".T") ? t : (/^\d{4}$/.test(t) ? `${t}.T` : t)))];
+
+    try {
+      // 1. 明示的に ticker 指定された場合は その個別株を Perplexity に問い合わせ
+      if (explicitTickers.length > 0 && explicitTickers.length <= 5) {
+        const items = explicitTickers.map(t => ({ ticker: t }));
+        const prices = await realtimeMultiPrices(items);
+        const blocks = Object.entries(prices)
+          .filter(([, v]) => v != null)
+          .map(([k, v]) => `### ${k} (Perplexity リアルタイム)\n${v}`)
+          .join("\n\n");
+        if (blocks) realtimeInfo += `\n\n## リアルタイム情報 (Perplexity 経由)\n${blocks}`;
+      }
+      // 2. ticker 指定なし + キーワード hit → 自由テキスト query (例: "今日の日経平均は")
+      else if (hasTrigger) {
+        const ans = await realtimeMarketQuery(lastUserMsg);
+        if (ans) realtimeInfo += `\n\n## リアルタイム情報 (Perplexity 経由)\n${ans}`;
+      }
+      // 3. ポートフォリオ質問なら top 3 保有銘柄の状況も取る (重い)
+      else if (topHoldings.length > 0 && (lastUserMsg.includes("ポート") || lastUserMsg.includes("保有") || lastUserMsg.includes("評価"))) {
+        const top3 = topHoldings.slice(0, 3).map(h => ({
+          ticker: h.code || h.ticker || "",
+          name: h.name,
+        })).filter(h => h.ticker);
+        if (top3.length > 0) {
+          const prices = await realtimeMultiPrices(top3);
+          const blocks = Object.entries(prices)
+            .filter(([, v]) => v != null)
+            .map(([k, v]) => `### ${k}\n${v}`)
+            .join("\n\n");
+          if (blocks) realtimeInfo += `\n\n## 保有銘柄リアルタイム情報 (Perplexity)\n${blocks}`;
+        }
+      }
+    } catch (e) {
+      console.warn("[ai-chat] perplexity 失敗:", e instanceof Error ? e.message : e);
+    }
   }
 
   const systemPrompt = `あなたは機関投資家レベルの冷徹なクオンツ・投資アナリストだ。忖度は一切禁止。データと確率に基づき厳格に分析する。
@@ -85,6 +135,7 @@ ${sorted.map((h: HoldingInput) => {
 - 銘柄の質問にはMOAT評価とバリュエーション比較を含める
 - ポートフォリオの質問にはセクター配分とリバランス提案を含める
 ${holdingsInfo}
+${realtimeInfo}
 
 ## 現在の市場コンテキスト
 ${context ? JSON.stringify({ indices: context.indices, fredData: context.fredData, news: context.news }, null, 2) : "コンテキストなし"}
