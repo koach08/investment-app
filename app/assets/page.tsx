@@ -113,6 +113,15 @@ export default function AssetsPage() {
   const [syncingSBI, setSyncingSBI] = useState(false);
   const [syncingMF, setSyncingMF] = useState(false);
   const [syncingZaim, setSyncingZaim] = useState(false);
+  const [walletData, setWalletData] = useState<{
+    address: string;
+    eth: { amount: number; jpyValue: number };
+    tokens: { symbol: string; amount: number; jpyValue: number }[];
+    totalJPY: number;
+    fetchedAt: string;
+  } | null>(null);
+  const [walletAddressInput, setWalletAddressInput] = useState("");
+  const [syncingWallet, setSyncingWallet] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
 
   // Price refresh state
@@ -245,6 +254,10 @@ export default function AssetsPage() {
       if (savedMf) setMfData(JSON.parse(savedMf));
     } catch { /* ignore */ }
     try {
+      const savedWallet = localStorage.getItem("investment-app-wallet-address");
+      if (savedWallet) setWalletAddressInput(savedWallet);
+    } catch { /* ignore */ }
+    try {
       const savedMetals = localStorage.getItem("investment-app-metals-data");
       if (savedMetals) setMetalsData(JSON.parse(savedMetals));
     } catch { /* ignore */ }
@@ -331,6 +344,32 @@ export default function AssetsPage() {
       setStatusMsg(`SBI static 失敗: ${e instanceof Error ? e.message : "unknown"}`);
     }
     setSyncingSBI(false);
+  };
+
+  // MetaMask / on-chain ウォレット残高取得 (表示のみ、取引しない)
+  const syncFromWallet = async (addressOverride?: string) => {
+    const addr = addressOverride ?? walletAddressInput.trim() ?? "";
+    setSyncingWallet(true);
+    setStatusMsg("ウォレット残高取得中...");
+    try {
+      const url = addr
+        ? `/api/onchain/wallet?address=${encodeURIComponent(addr)}`
+        : "/api/onchain/wallet";
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.error) {
+        setStatusMsg(`ウォレット取得失敗: ${data.error}`);
+      } else {
+        setWalletData(data);
+        if (addr) {
+          try { localStorage.setItem("investment-app-wallet-address", addr); } catch { /* ignore */ }
+        }
+        setStatusMsg(`ウォレット: ¥${Math.round(data.totalJPY).toLocaleString()} (ETH ${data.eth.amount.toFixed(4)} + ${data.tokens.length} tokens)`);
+      }
+    } catch (e) {
+      setStatusMsg(`ウォレット通信失敗: ${e instanceof Error ? e.message : "unknown"}`);
+    }
+    setSyncingWallet(false);
   };
 
   // Sync from Zaim (MF が不正アクセス対策で使えなくなった代替)
@@ -1226,6 +1265,55 @@ export default function AssetsPage() {
                 ) : "Zaim から取得"}
               </button>
             </div>
+          </div>
+
+          {/* MetaMask / On-chain Wallet (表示のみ、取引しない) */}
+          <div className="border border-zinc-800 rounded-lg p-5 bg-zinc-900/50">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-lg bg-orange-600/20 flex items-center justify-center text-xl">🦊</div>
+              <div>
+                <h4 className="font-semibold">MetaMask / On-chain ウォレット</h4>
+                <p className="text-xs text-zinc-500">ETH + ERC20 残高表示のみ（取引には組み込まない）</p>
+              </div>
+            </div>
+            <div className="space-y-2 mb-3">
+              <label className="text-xs text-zinc-500">ウォレットアドレス (0x... 公開情報。秘密鍵は絶対入力しない)</label>
+              <input
+                type="text"
+                value={walletAddressInput}
+                onChange={(e) => setWalletAddressInput(e.target.value)}
+                placeholder="0x..."
+                className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-sm font-mono"
+              />
+            </div>
+            <button
+              onClick={() => syncFromWallet()}
+              disabled={syncingWallet || walletAddressInput.length !== 42}
+              className="w-full py-2 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+            >
+              {syncingWallet ? "取得中..." : "残高取得"}
+            </button>
+            {walletData && (
+              <div className="mt-4 space-y-2 text-xs">
+                <div className="flex justify-between border-b border-zinc-800 pb-2">
+                  <span className="text-zinc-400">合計</span>
+                  <span className="font-mono font-bold text-orange-300">¥{Math.round(walletData.totalJPY).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-zinc-500">ETH {walletData.eth.amount.toFixed(6)}</span>
+                  <span className="font-mono text-zinc-300">¥{Math.round(walletData.eth.jpyValue).toLocaleString()}</span>
+                </div>
+                {walletData.tokens.map(t => (
+                  <div key={t.symbol} className="flex justify-between">
+                    <span className="text-zinc-500">{t.symbol} {t.amount.toFixed(t.symbol === "USDT" || t.symbol === "USDC" ? 2 : 6)}</span>
+                    <span className="font-mono text-zinc-300">¥{Math.round(t.jpyValue).toLocaleString()}</span>
+                  </div>
+                ))}
+                <div className="text-[10px] text-zinc-600 text-right">
+                  更新: {new Date(walletData.fetchedAt).toLocaleString("ja-JP")}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Setup guide */}
