@@ -64,6 +64,24 @@ export interface StrategyProposal {
   };
 }
 
+export interface InstitutionalRiskReport {
+  gate: "TRADEABLE" | "REDUCE_SIZE" | "AVOID";
+  riskScore: number;
+  annualizedVolatilityPercent: number;
+  valueAtRisk95Percent: number;
+  conditionalVaR95Percent: number;
+  maxDrawdownPercent: number;
+  atrPercent: number;
+  liquidityScore: number;
+  trendQuality: number;
+  stopLossPrice?: number;
+  takeProfitPrice?: number;
+  suggestedPositionPercent: number;
+  maxLossAtSuggestedSizePercent: number;
+  killSwitch: boolean;
+  warnings: string[];
+}
+
 export interface PortfolioSummary {
   analyzed: number;
   byAction: Record<string, number>;

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { clsx } from "clsx";
 import TickerLink from "@/components/TickerLink";
-import type { QuantAnalysis, RegimeAnalysis, StrategyProposal, PortfolioSummary } from "@/lib/quant/types";
+import type { InstitutionalRiskReport, QuantAnalysis, RegimeAnalysis, StrategyProposal, PortfolioSummary } from "@/lib/quant/types";
 import type { ScoringResult } from "@/lib/quant/scoring-engine";
 import type { PortfolioRow } from "@/app/api/quant/portfolio/route";
 
@@ -15,6 +15,7 @@ interface AnalyzeResponse {
   tickerRegime: RegimeAnalysis;
   marketRegime: RegimeAnalysis;
   decision: ScoringResult;
+  risk: InstitutionalRiskReport;
   strategies: StrategyProposal[];
   auditId?: string;
 }
@@ -70,8 +71,19 @@ const ACTION_COLORS: Record<string, string> = {
   EXIT: "bg-red-600/20 text-red-300 border-red-500/40",
 };
 
+const RISK_GATE_LABEL: Record<InstitutionalRiskReport["gate"], string> = {
+  TRADEABLE: "取引可",
+  REDUCE_SIZE: "縮小",
+  AVOID: "回避",
+};
+
+const RISK_GATE_COLORS: Record<InstitutionalRiskReport["gate"], string> = {
+  TRADEABLE: "border-green-500/30 bg-green-500/10 text-green-300",
+  REDUCE_SIZE: "border-yellow-500/30 bg-yellow-500/10 text-yellow-300",
+  AVOID: "border-red-500/30 bg-red-500/10 text-red-300",
+};
+
 function ScoreBar({ score }: { score: number }) {
-  const pct = Math.min(100, Math.max(0, (score + 100) / 2));
   return (
     <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden relative">
       <div className="absolute top-0 bottom-0 left-1/2 w-px bg-zinc-600" />
@@ -106,6 +118,93 @@ function RegimeBadge({ regime }: { regime: RegimeAnalysis }) {
         <div>ATR: {regime.factors.atrPercent}%</div>
         <div>30日値幅: {regime.factors.rangeWidthPercent}%</div>
       </div>
+    </div>
+  );
+}
+
+function RiskCard({ risk, compact = false }: { risk: InstitutionalRiskReport; compact?: boolean }) {
+  const metricClass = compact
+    ? "grid grid-cols-2 gap-2 text-[11px]"
+    : "grid grid-cols-2 md:grid-cols-4 gap-2 text-xs";
+
+  return (
+    <div className={clsx("border rounded-xl p-4", RISK_GATE_COLORS[risk.gate])}>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <div className="text-xs font-semibold opacity-70">Institutional Risk Gate</div>
+          <div className="text-lg font-bold">
+            {RISK_GATE_LABEL[risk.gate]} / Risk {risk.riskScore}
+          </div>
+        </div>
+        {risk.killSwitch && (
+          <span className="px-2 py-1 rounded bg-red-950/70 border border-red-500/30 text-[10px] font-bold">
+            KILL SWITCH
+          </span>
+        )}
+      </div>
+      <div className={metricClass}>
+        <div>
+          <div className="opacity-60">推奨サイズ</div>
+          <div className="font-mono font-bold">{risk.suggestedPositionPercent.toFixed(2)}%</div>
+        </div>
+        <div>
+          <div className="opacity-60">最大損失</div>
+          <div className="font-mono font-bold">{risk.maxLossAtSuggestedSizePercent.toFixed(2)}%</div>
+        </div>
+        <div>
+          <div className="opacity-60">VaR 95%</div>
+          <div className="font-mono font-bold">{risk.valueAtRisk95Percent.toFixed(2)}%</div>
+        </div>
+        <div>
+          <div className="opacity-60">CVaR 95%</div>
+          <div className="font-mono font-bold">{risk.conditionalVaR95Percent.toFixed(2)}%</div>
+        </div>
+        {!compact && (
+          <>
+            <div>
+              <div className="opacity-60">年率ボラ</div>
+              <div className="font-mono font-bold">{risk.annualizedVolatilityPercent.toFixed(1)}%</div>
+            </div>
+            <div>
+              <div className="opacity-60">最大DD</div>
+              <div className="font-mono font-bold">{risk.maxDrawdownPercent.toFixed(1)}%</div>
+            </div>
+            <div>
+              <div className="opacity-60">流動性</div>
+              <div className="font-mono font-bold">{risk.liquidityScore}</div>
+            </div>
+            <div>
+              <div className="opacity-60">トレンド品質</div>
+              <div className="font-mono font-bold">{risk.trendQuality}</div>
+            </div>
+          </>
+        )}
+      </div>
+      {(risk.stopLossPrice || risk.takeProfitPrice) && !compact && (
+        <div className="grid grid-cols-2 gap-2 mt-3 text-xs">
+          {risk.stopLossPrice && (
+            <div className="bg-zinc-950/50 rounded p-2">
+              <span className="opacity-60">Risk SL </span>
+              <span className="font-mono text-red-300">{risk.stopLossPrice.toLocaleString()}</span>
+            </div>
+          )}
+          {risk.takeProfitPrice && (
+            <div className="bg-zinc-950/50 rounded p-2">
+              <span className="opacity-60">Target </span>
+              <span className="font-mono text-green-300">{risk.takeProfitPrice.toLocaleString()}</span>
+            </div>
+          )}
+        </div>
+      )}
+      {risk.warnings.length > 0 && (
+        <ul className="mt-3 space-y-1">
+          {risk.warnings.slice(0, compact ? 2 : 4).map((warning, index) => (
+            <li key={index} className="text-[11px] leading-relaxed opacity-90">
+              {warning}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -237,6 +336,15 @@ function PortfolioOverview({ rows, summary }: { rows: PortfolioRow[]; summary: P
     }
   }
   const maxBucket = Math.max(...buckets.map(b => b.count), 1);
+  const riskRows = rows.filter((r) => r.risk);
+  const avgRisk = riskRows.length
+    ? Math.round(riskRows.reduce((sum, r) => sum + (r.risk?.riskScore ?? 0), 0) / riskRows.length)
+    : 0;
+  const avoidCount = riskRows.filter((r) => r.risk?.gate === "AVOID").length;
+  const reduceCount = riskRows.filter((r) => r.risk?.gate === "REDUCE_SIZE").length;
+  const avgSuggestedSize = riskRows.length
+    ? riskRows.reduce((sum, r) => sum + (r.risk?.suggestedPositionPercent ?? 0), 0) / riskRows.length
+    : 0;
 
   return (
     <div className="space-y-4">
@@ -256,6 +364,32 @@ function PortfolioOverview({ rows, summary }: { rows: PortfolioRow[]; summary: P
           </div>
         ))}
       </div>
+
+      {riskRows.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-xl p-3">
+            <div className="text-[10px] text-zinc-500 uppercase">Risk Score</div>
+            <div className={clsx(
+              "text-xl font-bold font-mono",
+              avgRisk >= 70 ? "text-green-400" : avgRisk >= 50 ? "text-yellow-400" : "text-red-400"
+            )}>
+              {avgRisk}
+            </div>
+          </div>
+          <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-xl p-3">
+            <div className="text-[10px] text-zinc-500 uppercase">回避ゲート</div>
+            <div className="text-xl font-bold font-mono text-red-300">{avoidCount}</div>
+          </div>
+          <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-xl p-3">
+            <div className="text-[10px] text-zinc-500 uppercase">縮小ゲート</div>
+            <div className="text-xl font-bold font-mono text-yellow-300">{reduceCount}</div>
+          </div>
+          <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-xl p-3">
+            <div className="text-[10px] text-zinc-500 uppercase">平均推奨サイズ</div>
+            <div className="text-xl font-bold font-mono">{avgSuggestedSize.toFixed(1)}%</div>
+          </div>
+        </div>
+      )}
 
       {/* Score distribution */}
       <div className="bg-zinc-900/40 border border-zinc-800/60 rounded-xl p-4">
@@ -740,6 +874,8 @@ export default function QuantPage() {
                 </div>
               </div>
 
+              <RiskCard risk={result.risk} />
+
               {/* Regimes */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <RegimeBadge regime={result.tickerRegime} />
@@ -893,6 +1029,11 @@ export default function QuantPage() {
                         <ScoreBar score={r.analysis?.compositeScore ?? 0} />
                       </div>
                       <p className="text-xs text-zinc-400 mb-3">{r.decision?.reason}</p>
+                      {r.risk && (
+                        <div className="mb-3">
+                          <RiskCard risk={r.risk} compact />
+                        </div>
+                      )}
                       {r.strategies && (
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                           {r.strategies.map((s) => (

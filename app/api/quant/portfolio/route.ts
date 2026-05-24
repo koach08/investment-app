@@ -7,7 +7,8 @@ import { calculateFinalDecision, type ScoringResult } from "@/lib/quant/scoring-
 import { buildStrategies } from "@/lib/quant/strategy";
 import { fetchYahooBars } from "@/lib/quant/yahoo-fetch";
 import { summarizePortfolio } from "@/lib/quant/portfolio-summary";
-import type { QuantAnalysis, RegimeAnalysis, StrategyProposal, PortfolioSummary } from "@/lib/quant/types";
+import { assessInstitutionalRisk } from "@/lib/quant/risk-engine";
+import type { InstitutionalRiskReport, QuantAnalysis, RegimeAnalysis, StrategyProposal, PortfolioSummary } from "@/lib/quant/types";
 
 interface Holding {
   code: string;
@@ -34,6 +35,7 @@ export interface PortfolioRow {
   analysis?: QuantAnalysis;
   regime?: RegimeAnalysis;
   decision?: ScoringResult;
+  risk?: InstitutionalRiskReport;
   strategies?: StrategyProposal[];
   error?: string;
 }
@@ -82,6 +84,12 @@ async function analyzeRow(h: Holding): Promise<PortfolioRow> {
       quantAnalysis: analysis,
       regime,
     });
+    const risk = assessInstitutionalRisk({
+      bars: data.bars,
+      action: decision.action,
+      regime: regime.regime,
+      confidence: decision.confidence,
+    });
     const strategies = buildStrategies({
       bars: data.bars,
       analysis,
@@ -96,6 +104,7 @@ async function analyzeRow(h: Holding): Promise<PortfolioRow> {
       analysis,
       regime,
       decision,
+      risk,
       strategies,
     };
   } catch (e) {

@@ -100,8 +100,6 @@ interface ProxyError {
   message?: string;
 }
 
-const PAIRS = ["BTC/JPY", "ETH/JPY", "XRP/JPY"] as const;
-
 function fmt(n: number | undefined, digits = 0): string {
   if (n === undefined || n === null || Number.isNaN(n)) return "—";
   return n.toLocaleString("ja-JP", { maximumFractionDigits: digits });
@@ -115,6 +113,52 @@ function timeAgo(iso: string): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}時間前`;
   return `${Math.floor(h / 24)}日前`;
+}
+
+function buildCryptoRiskPanel(
+  positions: Position[],
+  pnl: DailyPnL,
+  cum: CumulativePnL | undefined,
+  status: BotStatus,
+  recentDecisions: AIDecision[]
+) {
+  const capital = cum?.startCapitalJPY ?? pnl.startCapitalJPY;
+  const exposure = positions.reduce((sum, p) => sum + p.valueJPY, 0);
+  const exposurePercent = capital > 0 ? (exposure / capital) * 100 : 0;
+  const openRiskJPY = positions.reduce((sum, p) => {
+    if (!p.stopLoss) return sum + p.valueJPY * 0.08;
+    return sum + Math.max(0, (p.avgEntryPrice - p.stopLoss) * p.amount);
+  }, 0);
+  const openRiskPercent = capital > 0 ? (openRiskJPY / capital) * 100 : 0;
+  const lossStreak = [...recentDecisions].reverse().slice(0, 5).filter((d) => d.action !== "HOLD" && d.confidence < 55).length;
+  const dailyLossPercent = pnl.startCapitalJPY > 0 ? Math.min(0, pnl.totalPnL / pnl.startCapitalJPY) * 100 : 0;
+  const warnings: string[] = [];
+
+  if (!status.paperMode) warnings.push("ライブ運用モード。注文前の手動確認を推奨");
+  if (exposurePercent > 55) warnings.push("暗号資産エクスポージャーが大きい");
+  if (openRiskPercent > 2) warnings.push("未決済ポジションの想定損失が大きい");
+  if (dailyLossPercent <= -2) warnings.push("日次損失が2%超。クールダウン推奨");
+  if (status.circuitBreakerState !== "ACTIVE") warnings.push(`サーキットブレーカー: ${status.circuitBreakerState}`);
+  if (lossStreak >= 3) warnings.push("低確信度の取引判断が続いている");
+
+  const score = Math.round(Math.max(0, 100 - exposurePercent * 0.5 - openRiskPercent * 10 + dailyLossPercent * 8 - warnings.length * 8));
+  const gate = status.circuitBreakerState === "TRIGGERED" || score < 35
+    ? "AVOID"
+    : score < 65 || warnings.length > 0
+    ? "REDUCE_SIZE"
+    : "TRADEABLE";
+
+  return {
+    capital,
+    exposure,
+    exposurePercent,
+    openRiskJPY,
+    openRiskPercent,
+    dailyLossPercent,
+    score,
+    gate,
+    warnings,
+  };
 }
 
 export default function CryptoPage() {
@@ -202,6 +246,7 @@ export default function CryptoPage() {
   const { status, positions, dailyPnL: pnl, cumulativePnL: cum, recentDecisions, recentTrades } = data!;
   const totalUnrealized = positions.reduce((sum, p) => sum + p.unrealizedPnL, 0);
   const totalPositionValue = positions.reduce((sum, p) => sum + p.valueJPY, 0);
+  const risk = buildCryptoRiskPanel(positions, pnl, cum, status, recentDecisions);
 
   return (
     <div className="space-y-6">
@@ -268,6 +313,56 @@ export default function CryptoPage() {
         >
           手動サイクル実行
         </button>
+      </div>
+
+      <div
+        className={clsx(
+          "border rounded-xl p-4",
+          risk.gate === "TRADEABLE"
+            ? "border-green-700/40 bg-green-950/10"
+            : risk.gate === "REDUCE_SIZE"
+            ? "border-yellow-700/40 bg-yellow-950/10"
+            : "border-red-700/40 bg-red-950/10"
+        )}
+      >
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <div className="text-xs text-zinc-500 font-semibold">Institutional Risk Overlay</div>
+            <div className="text-lg font-bold">
+              {risk.gate === "TRADEABLE" ? "取引可" : risk.gate === "REDUCE_SIZE" ? "サイズ縮小" : "新規回避"} / Risk {risk.score}
+            </div>
+          </div>
+          <div className="text-right text-xs text-zinc-500">
+            目安: 1取引の許容損失は資金の0.5〜0.8%
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+          <div className="bg-zinc-950/40 rounded p-2">
+            <div className="text-zinc-500">総エクスポージャー</div>
+            <div className="font-mono font-bold">¥{fmt(risk.exposure)} ({risk.exposurePercent.toFixed(1)}%)</div>
+          </div>
+          <div className="bg-zinc-950/40 rounded p-2">
+            <div className="text-zinc-500">Open Risk</div>
+            <div className="font-mono font-bold">¥{fmt(risk.openRiskJPY)} ({risk.openRiskPercent.toFixed(2)}%)</div>
+          </div>
+          <div className="bg-zinc-950/40 rounded p-2">
+            <div className="text-zinc-500">日次損益</div>
+            <div className={clsx("font-mono font-bold", pnl.totalPnL >= 0 ? "text-green-400" : "text-red-400")}>
+              {pnl.totalPnL >= 0 ? "+" : ""}¥{fmt(pnl.totalPnL)}
+            </div>
+          </div>
+          <div className="bg-zinc-950/40 rounded p-2">
+            <div className="text-zinc-500">ポジション評価額</div>
+            <div className="font-mono font-bold">¥{fmt(totalPositionValue)}</div>
+          </div>
+        </div>
+        {risk.warnings.length > 0 && (
+          <ul className="mt-3 space-y-1">
+            {risk.warnings.map((w, i) => (
+              <li key={i} className="text-[11px] text-yellow-200/80">{w}</li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Cumulative Summary Cards */}

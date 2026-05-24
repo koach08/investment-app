@@ -5,6 +5,7 @@ import { calculateFinalDecision } from "@/lib/quant/scoring-engine";
 import { buildStrategies } from "@/lib/quant/strategy";
 import { fetchYahooBars } from "@/lib/quant/yahoo-fetch";
 import { saveAudit } from "@/lib/quant/audit-log";
+import { assessInstitutionalRisk } from "@/lib/quant/risk-engine";
 
 const NIKKEI_TICKER = "^N225";
 
@@ -46,6 +47,12 @@ export async function POST(req: NextRequest) {
       quantAnalysis: analysis,
       regime: tickerRegime,
     });
+    const risk = assessInstitutionalRisk({
+      bars: tickerData.bars,
+      action: decision.action,
+      regime: tickerRegime.regime,
+      confidence: decision.confidence,
+    });
 
     const strategies = buildStrategies({
       bars: tickerData.bars,
@@ -78,6 +85,7 @@ export async function POST(req: NextRequest) {
       tickerRegime,
       marketRegime,
       decision,
+      risk,
       strategies,
       auditId,
     });

@@ -4,6 +4,8 @@ import { useState } from "react";
 import SignalBadge from "@/components/SignalBadge";
 import TickerLink from "@/components/TickerLink";
 import { generateSignal, type ScanSignal } from "@/lib/indicators";
+import { assessInstitutionalRisk } from "@/lib/quant/risk-engine";
+import type { InstitutionalRiskReport, QuantAction } from "@/lib/quant/types";
 
 const DEFAULT_TICKERS = [
   { ticker: "7203.T", name: "トヨタ自動車" },
@@ -27,6 +29,13 @@ const DEFAULT_TICKERS = [
 interface ScanResult extends ScanSignal {
   newsCount: number;
   latestNews?: string;
+  risk: InstitutionalRiskReport;
+}
+
+function actionFromScan(signal: ScanSignal["signal"]): QuantAction {
+  if (signal === "STRONG_BUY" || signal === "BUY") return "BUY";
+  if (signal === "STRONG_SELL" || signal === "SELL") return "SELL";
+  return "HOLD";
 }
 
 export default function ScannerPage() {
@@ -77,7 +86,7 @@ export default function ScannerPage() {
       const promises = batch.map(async ({ ticker, name }) => {
         try {
           const [marketRes, newsRes] = await Promise.all([
-            fetch(`/api/market?ticker=${encodeURIComponent(ticker)}&period=6mo`),
+            fetch(`/api/market?ticker=${encodeURIComponent(ticker)}&period=1y`),
             fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`),
           ]);
 
@@ -91,8 +100,21 @@ export default function ScannerPage() {
           const closes = marketData.prices.map((p: { close: number }) => p.close);
           const highs = marketData.prices.map((p: { high: number }) => p.high);
           const lows = marketData.prices.map((p: { low: number }) => p.low);
+          const bars = marketData.prices.map((p: { date: string; open: number; high: number; low: number; close: number; volume: number }) => ({
+            timestamp: new Date(p.date).getTime(),
+            open: p.open ?? p.close,
+            high: p.high ?? p.close,
+            low: p.low ?? p.close,
+            close: p.close,
+            volume: p.volume ?? 0,
+          }));
 
           const { signal, score, rsiVal, macdHist, bbPos } = generateSignal(closes, highs, lows);
+          const risk = assessInstitutionalRisk({
+            bars,
+            action: actionFromScan(signal),
+            confidence: Math.min(90, 45 + Math.abs(score) * 10),
+          });
 
           return {
             ticker,
@@ -103,6 +125,7 @@ export default function ScannerPage() {
             bbPosition: bbPos,
             signal,
             score,
+            risk,
             newsCount: newsData.news?.length || 0,
             latestNews: newsData.news?.[0]?.title,
           } as ScanResult;
@@ -208,6 +231,20 @@ export default function ScannerPage() {
                         <div>MACD: {r.macdHistogram?.toFixed(2) ?? "N/A"}</div>
                         <div>BB: {r.bbPosition ?? "N/A"}</div>
                       </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                        <div className="bg-zinc-950/50 rounded p-2">
+                          <div className="text-zinc-500">Risk Gate</div>
+                          <div className="font-bold">{r.risk.gate}</div>
+                        </div>
+                        <div className="bg-zinc-950/50 rounded p-2">
+                          <div className="text-zinc-500">Size</div>
+                          <div className="font-mono font-bold">{r.risk.suggestedPositionPercent.toFixed(1)}%</div>
+                        </div>
+                        <div className="bg-zinc-950/50 rounded p-2">
+                          <div className="text-zinc-500">CVaR</div>
+                          <div className="font-mono font-bold">{r.risk.conditionalVaR95Percent.toFixed(1)}%</div>
+                        </div>
+                      </div>
                       {r.latestNews && (
                         <div className="mt-2 text-xs text-zinc-500 line-clamp-1">
                           📰 {r.latestNews}
@@ -232,6 +269,8 @@ export default function ScannerPage() {
                   <th className="text-center py-2 px-2">BB</th>
                   <th className="text-center py-2 px-2">ニュース</th>
                   <th className="text-center py-2 px-2">シグナル</th>
+                  <th className="text-center py-2 px-2">リスク</th>
+                  <th className="text-right py-2 px-2">サイズ</th>
                   <th className="text-right py-2 px-2">スコア</th>
                 </tr>
               </thead>
@@ -262,6 +301,23 @@ export default function ScannerPage() {
                     </td>
                     <td className="py-2 px-2 text-center">
                       <SignalBadge signal={r.signal} />
+                    </td>
+                    <td className="py-2 px-2 text-center">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                          r.risk.gate === "TRADEABLE"
+                            ? "border-green-700 bg-green-950/30 text-green-300"
+                            : r.risk.gate === "REDUCE_SIZE"
+                            ? "border-yellow-700 bg-yellow-950/30 text-yellow-300"
+                            : "border-red-700 bg-red-950/30 text-red-300"
+                        }`}
+                        title={r.risk.warnings.join(" / ") || `Risk ${r.risk.riskScore}`}
+                      >
+                        {r.risk.gate === "TRADEABLE" ? "可" : r.risk.gate === "REDUCE_SIZE" ? "縮小" : "回避"} {r.risk.riskScore}
+                      </span>
+                    </td>
+                    <td className="py-2 px-2 text-right font-mono">
+                      {r.risk.suggestedPositionPercent.toFixed(1)}%
                     </td>
                     <td className="py-2 px-2 text-right font-mono font-bold">
                       {r.score}
