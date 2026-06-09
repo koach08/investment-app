@@ -706,6 +706,7 @@ export default function AdvisorPage() {
           context: {
             ...marketContext,
             holdings,
+            generatedStrategy: strategy,
           },
         }),
         signal: abortController.signal,

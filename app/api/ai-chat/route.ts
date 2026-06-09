@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { STANDARD } from "@/lib/model-config";
+import { HEAVY } from "@/lib/model-config";
 import { realtimeMultiPrices, realtimeMarketQuery } from "@/lib/perplexity-realtime";
 
 interface HoldingInput {
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
       .slice(0, 15);
     topHoldings = sorted;
     holdingsInfo = `
-## ユーザーの保有銘柄
+## ユーザーの保有銘柄（唯一の正・推測で書き換え禁止）
 ${sorted.map((h: HoldingInput) => {
   const ticker = h.code || h.ticker || "不明";
   const name = h.name || ticker;
@@ -98,7 +98,59 @@ ${sorted.map((h: HoldingInput) => {
     }
   }
 
+  // === 今日の日付 (JST) === 日付誤認を防ぐためサーバ側で確定して注入する
+  const todayJst = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "long",
+  }).format(new Date());
+
+  // === 戦略タブで生成した戦略をチャットに引き継ぐ ===
+  // これが無いと「戦略タブで空売りを提案」→「チャットでなぜ空売りしてるんだと矛盾」が起きる
+  let strategyInfo = "";
+  if (context?.generatedStrategy) {
+    let stratStr = "";
+    try {
+      stratStr = typeof context.generatedStrategy === "string"
+        ? context.generatedStrategy
+        : JSON.stringify(context.generatedStrategy, null, 2);
+    } catch {
+      stratStr = "";
+    }
+    if (stratStr && stratStr.length > 20) {
+      // 長すぎる場合は先頭を優先 (system prompt 肥大化防止)
+      const clipped = stratStr.length > 8000 ? stratStr.slice(0, 8000) + "\n…(以下省略)" : stratStr;
+      strategyInfo = `
+
+## ⚠️ あなた自身が直近に生成した「投資戦略」（このアプリの戦略タブの出力）
+ユーザーはこの戦略に従って実際に注文を出している可能性が高い。
+この戦略と矛盾する発言を絶対にするな。例えば戦略でANA空売りを提示しているのに「なぜ空売りしているのか」と問い返すのは重大な誤りだ。
+戦略の内容を前提として会話を継続せよ。
+
+${clipped}`;
+    }
+  }
+
   const systemPrompt = `あなたは機関投資家レベルの冷徹なクオンツ・投資アナリストだ。忖度は一切禁止。データと確率に基づき厳格に分析する。
+
+## 🗓️ 今日の日付（厳守）
+今日は **${todayJst}** だ。これがこの会話の基準日である。
+- 日付・曜日・「今日/先週/明日」の判断は必ずこの基準日を使え。会話履歴の古い日付に引きずられて日付を取り違えるな。
+- カタリストやイベントの「済み/未来」の判定もこの基準日で行え。
+
+## 🧠 会話の一貫性（最重要・絶対厳守）
+過去の対応で「文脈を忘れる・自分の指示と逆を言う・数字がコロコロ変わる」という重大な失敗が起きた。二度と繰り返すな。
+- 会話履歴とこの後の「保有銘柄」「生成済み戦略」は**唯一の正**として扱え。保有数量・建単価・口座種別を**勝手に推測して言い換えるな**。不明なら一度だけ質問し、得た情報はそれ以降ずっと保持せよ。
+- 自分が一度出した推奨（売る/買う/空売り/逆指値の価格）と**矛盾する発言をするな**。考えを変える正当な理由があるときだけ「前言を修正する。理由は〜」と明示してから変えよ。理由なく方針を反転させるな。
+- 現物・信用買い・信用売り（空売り）を厳密に区別せよ。ユーザーが戦略どおり空売りしている場合、それを否定したり「なぜ？」と問い返すな。
+- 一度提示した価格（利確/損切り/トリガー）は会話中で勝手に変えるな。変える必要があるなら理由を述べてから。
+
+## 📡 データの限界（正直さ）
+- あなたはリアルタイムの板情報・約定状況・口座残高を持っていない。下記コンテキストやPerplexity要約は**時点付きスナップショット**にすぎない。
+- リアルタイム株価が無いのに具体的な株価・エントリー価格を**断定するな**。出す場合は「（${todayJst}時点の参考値／要確認）」と前提を必ず添えよ。
+- 注文の実行手順を案内するときは、ユーザーが見ている画面の表示を正として扱い、推測で画面項目を断定しない。
 
 ## 専門分野と分析フレームワーク
 
@@ -125,16 +177,17 @@ ${sorted.map((h: HoldingInput) => {
 - 為替・金利の影響分析
 
 ## 回答ルール
-- 具体的な数字（価格、利回り、リスクリワード比）を必ず示す
-- 損切り・撤退の提案を躊躇しない
-- 含み損銘柄には明確に判断を示す（損切りか、継続保有の根拠か）
-- 信用取引にはIFDOCO注文値を含める
+- 数字（価格、利回り、リスクリワード比）を示すときは根拠と前提（データ時点）を添える。リアルタイム株価が無ければ断定せず参考値と明示する
+- 損切り・撤退の提案を躊躇しない。ただし含み損銘柄の判断（損切り/継続保有）は根拠を明示する
+- 信用取引・空売りのIFDOCO注文値は、ユーザーがその実行を求めたときにのみ提示する。こちらから無条件に煽らない
 - 投資助言ではなく分析情報の提供
 - 日本株ティッカーは末尾に.T（例: 7203.T）
 - 配当金・株主優待の情報を積極的に提供
 - 銘柄の質問にはMOAT評価とバリュエーション比較を含める
 - ポートフォリオの質問にはセクター配分とリバランス提案を含める
+- ユーザーが混乱しているときは煽らず、まず現状を1つずつ確定させてから次へ進む
 ${holdingsInfo}
+${strategyInfo}
 ${realtimeInfo}
 
 ## 現在の市場コンテキスト
@@ -153,8 +206,8 @@ ${context ? JSON.stringify({ indices: context.indices, fredData: context.fredDat
     }));
 
     const message = await client.messages.create({
-      model: STANDARD.claude,
-      max_tokens: 3000,
+      model: HEAVY.claude,
+      max_tokens: 6000,
       system: systemPrompt,
       messages: anthropicMessages,
     });

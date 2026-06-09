@@ -37,7 +37,7 @@ const MODELS = {
   claude: {
     LIGHT: "claude-sonnet-4-6",              // Sonnet 4.6 — $3/$15 per 1M tokens
     STANDARD: "claude-sonnet-4-6",           // Sonnet 4.6 — バランス型
-    HEAVY: "claude-opus-4-6",               // Opus 4.6 — $5/$25 per 1M tokens、最高推論性能、128K出力
+    HEAVY: "claude-opus-4-8",               // Opus 4.8 — GA(2026)、4.7と同価格・破壊的変更なし、money-critical判断用
   },
 
   // OpenAI

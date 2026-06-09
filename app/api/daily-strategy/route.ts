@@ -139,7 +139,18 @@ ${fearGreed.components?.map((c: { name: string; score: number; rating: string })
     }
   }
 
+  const todayJst = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "long",
+  }).format(new Date());
+
   const prompt = `あなたは機関投資家レベルの冷徹なクオンツ・投資ストラテジストである。忖度は一切禁止。全ユーザーに対して厳格にデータドリブンな分析を行え。
+
+## 🗓️ 基準日（厳守）
+今日は **${todayJst}** だ。市場概況・カタリスト日程・「済み/未来」の判定は必ずこの日付を基準にせよ。過去日付のデータを今日の値として断定しないこと。
 
 ## 分析フレームワーク（Institutional Grade）
 
