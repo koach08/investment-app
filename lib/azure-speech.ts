@@ -1,9 +1,10 @@
 "use client";
 
 /**
- * Azure Speech のブラウザ側ヘルパー (音声入力 STT + 読み上げ TTS)。
- * SDK はブラウザ専用なので動的 import する。
- * トークンは /api/speech/token から取得 (key はサーバ側に隠蔽)。
+ * 音声入力 (STT) と読み上げ (TTS) のヘルパー。
+ * 第一候補: Azure Speech (高品質)。トークンは /api/speech/token から取得 (key はサーバ隠蔽)。
+ * フォールバック: ブラウザ標準 Web Speech API (キー不要・Chrome/Safari)。
+ * Azure が使えない (キー未設定/失効など) 場合は自動でブラウザ側に切り替わる。
  */
 
 import type {
@@ -25,32 +26,37 @@ async function getToken(): Promise<TokenResponse> {
   return res.json();
 }
 
-/** 音声認識ハンドル。stop() で停止。 */
 export interface RecognitionHandle {
   stop: () => void;
 }
 
-/**
- * マイクから日本語音声を認識し、確定テキストをコールバックで返す。
- * onPartial で認識途中の暫定テキストも返す (UI のリアルタイム表示用)。
- */
-export async function startRecognition(opts: {
+interface RecognitionOpts {
   onResult: (text: string) => void;
   onPartial?: (text: string) => void;
   onError?: (message: string) => void;
   lang?: string;
-}): Promise<RecognitionHandle> {
+}
+
+// ===== STT =====
+
+export async function startRecognition(opts: RecognitionOpts): Promise<RecognitionHandle> {
+  try {
+    return await azureRecognition(opts);
+  } catch {
+    // Azure 不可 → ブラウザ標準にフォールバック
+    return browserRecognition(opts);
+  }
+}
+
+async function azureRecognition(opts: RecognitionOpts): Promise<RecognitionHandle> {
   const sdk = await import("microsoft-cognitiveservices-speech-sdk");
-  const { token, region } = await getToken();
+  const { token, region } = await getToken(); // 401 等ならここで throw → フォールバック
 
   const speechConfig = sdk.SpeechConfig.fromAuthorizationToken(token, region);
   speechConfig.speechRecognitionLanguage = opts.lang || "ja-JP";
 
   const audioConfig = sdk.AudioConfig.fromDefaultMicrophoneInput();
-  const recognizer: SpeechRecognizer = new sdk.SpeechRecognizer(
-    speechConfig,
-    audioConfig
-  );
+  const recognizer: SpeechRecognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
 
   recognizer.recognizing = (_s, e) => {
     if (e.result.text) opts.onPartial?.(e.result.text);
@@ -73,15 +79,51 @@ export async function startRecognition(opts: {
   });
 
   return {
-    stop: () => {
-      recognizer.stopContinuousRecognitionAsync(() => recognizer.close());
-    },
+    stop: () => recognizer.stopContinuousRecognitionAsync(() => recognizer.close()),
   };
 }
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function browserRecognition(opts: RecognitionOpts): RecognitionHandle {
+  const SR =
+    (typeof window !== "undefined" &&
+      ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)) ||
+    null;
+  if (!SR) {
+    opts.onError?.("このブラウザは音声入力に非対応です（Chrome / Safari 推奨）");
+    return { stop: () => {} };
+  }
+  const rec = new SR();
+  rec.lang = opts.lang || "ja-JP";
+  rec.continuous = true;
+  rec.interimResults = true;
+
+  rec.onresult = (e: any) => {
+    let finalText = "";
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t;
+      else interim += t;
+    }
+    if (finalText) opts.onResult(finalText);
+    else if (interim) opts.onPartial?.(interim);
+  };
+  rec.onerror = (e: any) => opts.onError?.(e.error || "音声認識エラー");
+
+  try {
+    rec.start();
+  } catch (e) {
+    opts.onError?.(e instanceof Error ? e.message : "マイクを起動できませんでした");
+  }
+  return { stop: () => { try { rec.stop(); } catch { /* noop */ } } };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+// ===== TTS =====
+
 let activeSynth: SpeechSynthesizer | null = null;
 
-/** 読み上げ中なら停止する。 */
 export function stopSpeaking() {
   if (activeSynth) {
     try {
@@ -91,19 +133,25 @@ export function stopSpeaking() {
     }
     activeSynth = null;
   }
+  if (typeof window !== "undefined" && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
 }
 
-/**
- * テキストを日本語 neural voice で読み上げる。
- * Markdown 記号は読み上げ前に軽く除去する。
- */
 export async function speak(text: string, voice = "ja-JP-NanamiNeural"): Promise<void> {
-  stopSpeaking();
   const clean = stripMarkdown(text);
   if (!clean.trim()) return;
+  try {
+    await azureSpeak(clean, voice);
+  } catch {
+    await browserSpeak(clean);
+  }
+}
 
+async function azureSpeak(clean: string, voice: string): Promise<void> {
+  stopSpeaking();
   const sdk = await import("microsoft-cognitiveservices-speech-sdk");
-  const { token, region } = await getToken();
+  const { token, region } = await getToken(); // 失敗 → throw → ブラウザTTS
 
   const speechConfig = sdk.SpeechConfig.fromAuthorizationToken(token, region);
   speechConfig.speechSynthesisVoiceName = voice;
@@ -111,20 +159,42 @@ export async function speak(text: string, voice = "ja-JP-NanamiNeural"): Promise
   const synth = new sdk.SpeechSynthesizer(speechConfig);
   activeSynth = synth;
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     synth.speakTextAsync(
       clean,
-      () => {
+      (result) => {
         synth.close();
         if (activeSynth === synth) activeSynth = null;
-        resolve();
+        // 認証/合成失敗時は reject してブラウザにフォールバック
+        if (
+          result.reason === sdk.ResultReason.Canceled
+        ) {
+          reject(new Error("Azure 合成失敗"));
+        } else {
+          resolve();
+        }
       },
-      () => {
+      (err) => {
         synth.close();
         if (activeSynth === synth) activeSynth = null;
-        resolve();
+        reject(new Error(String(err)));
       }
     );
+  });
+}
+
+function browserSpeak(clean: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      resolve();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = "ja-JP";
+    u.onend = () => resolve();
+    u.onerror = () => resolve();
+    window.speechSynthesis.speak(u);
   });
 }
 
@@ -138,5 +208,5 @@ function stripMarkdown(md: string): string {
     .replace(/https?:\/\/\S+/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 1200); // 長文の読み上げ暴走を防ぐ
+    .slice(0, 1200);
 }
