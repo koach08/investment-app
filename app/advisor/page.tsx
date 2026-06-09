@@ -6,7 +6,8 @@ import TickerLink from "@/components/TickerLink";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { generateSignal, atr } from "@/lib/indicators";
 import { parseAiJson } from "@/lib/json-utils";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
+import { startRecognition, speak, stopSpeaking, type RecognitionHandle } from "@/lib/azure-speech";
 
 interface Pick {
   ticker: string;
@@ -449,6 +450,64 @@ export default function AdvisorPage() {
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatInitialized = useRef(false);
 
+  // ===== 音声入力 / 読み上げ (Azure Speech) =====
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const recognitionRef = useRef<RecognitionHandle | null>(null);
+  const baseInputRef = useRef("");
+
+  const toggleRecording = async () => {
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setIsRecording(false);
+      return;
+    }
+    setVoiceError(null);
+    baseInputRef.current = chatInput ? chatInput.trim() + " " : "";
+    try {
+      const handle = await startRecognition({
+        onResult: (text) => {
+          baseInputRef.current = (baseInputRef.current + text).trim() + " ";
+          setChatInput(baseInputRef.current.trimEnd());
+        },
+        onPartial: (text) => {
+          setChatInput((baseInputRef.current + text).trimEnd());
+        },
+        onError: (msg) => {
+          setVoiceError(msg);
+          setIsRecording(false);
+          recognitionRef.current = null;
+        },
+      });
+      recognitionRef.current = handle;
+      setIsRecording(true);
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "マイクを起動できませんでした");
+    }
+  };
+
+  const speakReply = async (text: string) => {
+    try {
+      setIsSpeaking(true);
+      await speak(text);
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "読み上げに失敗しました");
+    } finally {
+      setIsSpeaking(false);
+    }
+  };
+
+  const toggleTts = () => {
+    if (ttsEnabled) {
+      stopSpeaking();
+      setIsSpeaking(false);
+    }
+    setTtsEnabled((v) => !v);
+  };
+
   // Market context for chat
   const [marketContext, setMarketContext] = useState<Record<string, unknown> | null>(null);
 
@@ -688,6 +747,11 @@ export default function AdvisorPage() {
 
   const sendChat = async () => {
     if (!chatInput.trim() || chatLoading) return;
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setIsRecording(false);
+    }
     const userMsg: ChatMessage = { role: "user", content: chatInput.trim() };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
@@ -714,6 +778,7 @@ export default function AdvisorPage() {
       const data = await res.json();
       if (data.reply) {
         setMessages([...newMessages, { role: "assistant", content: data.reply }]);
+        if (ttsEnabled) speakReply(data.reply);
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -2003,8 +2068,39 @@ export default function AdvisorPage() {
             <div ref={chatEndRef} />
           </div>
 
+          {voiceError && (
+            <p className="text-xs text-amber-400 mb-1">🎙 {voiceError}</p>
+          )}
+
           {/* Input */}
           <div className="flex gap-2 border-t border-zinc-800 pt-3">
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={toggleRecording}
+                title={isRecording ? "音声入力を停止" : "音声で入力"}
+                className={clsx(
+                  "p-3 rounded-lg border transition-colors",
+                  isRecording
+                    ? "bg-red-600 border-red-500 animate-pulse"
+                    : "bg-zinc-900 border-zinc-700 hover:bg-zinc-800"
+                )}
+              >
+                {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5 text-zinc-300" />}
+              </button>
+              <button
+                onClick={toggleTts}
+                title={ttsEnabled ? "返答の読み上げをOFF" : "返答を音声で読み上げ"}
+                className={clsx(
+                  "p-3 rounded-lg border transition-colors",
+                  ttsEnabled
+                    ? "bg-purple-600 border-purple-500"
+                    : "bg-zinc-900 border-zinc-700 hover:bg-zinc-800",
+                  isSpeaking && "animate-pulse"
+                )}
+              >
+                {ttsEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5 text-zinc-300" />}
+              </button>
+            </div>
             <textarea
               suppressHydrationWarning
               value={chatInput}
@@ -2015,7 +2111,7 @@ export default function AdvisorPage() {
                   sendChat();
                 }
               }}
-              placeholder="投資について質問（例: トヨタの配当利回りは？NISAでおすすめの銘柄は？）&#10;Enterで送信 / Shift+Enterで改行"
+              placeholder="投資について質問（例: トヨタの配当利回りは？）&#10;🎙ボタンで音声入力 / 🔊で返答読み上げ / Enterで送信"
               rows={2}
               className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-purple-500 resize-none"
             />
