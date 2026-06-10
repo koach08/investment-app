@@ -2,29 +2,13 @@
 
 /**
  * 音声入力 (STT) と読み上げ (TTS) のヘルパー。
- * 第一候補: Azure Speech (高品質)。トークンは /api/speech/token から取得 (key はサーバ隠蔽)。
- * フォールバック: ブラウザ標準 Web Speech API (キー不要・Chrome/Safari)。
- * Azure が使えない (キー未設定/失効など) 場合は自動でブラウザ側に切り替わる。
+ * 第一候補: OpenAI (Whisper 文字起こし + OpenAI TTS)。既存の OPENAI_API_KEY を使用 (Azure不要)。
+ * フォールバック: ブラウザ標準 Web Speech API (キー不要)。
+ * OpenAI が使えない場合は自動でブラウザ側に切り替わる。
+ *
+ * 注: STT は「録音→停止→文字起こし」方式 (リアルタイム逐次ではない)。
+ *     停止した時点で音声を Whisper に送り、確定テキストを onResult で返す。
  */
-
-import type {
-  SpeechRecognizer,
-  SpeechSynthesizer,
-} from "microsoft-cognitiveservices-speech-sdk";
-
-interface TokenResponse {
-  token: string;
-  region: string;
-}
-
-async function getToken(): Promise<TokenResponse> {
-  const res = await fetch("/api/speech/token", { cache: "no-store" });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `token 取得失敗 (${res.status})`);
-  }
-  return res.json();
-}
 
 export interface RecognitionHandle {
   stop: () => void;
@@ -40,47 +24,72 @@ interface RecognitionOpts {
 // ===== STT =====
 
 export async function startRecognition(opts: RecognitionOpts): Promise<RecognitionHandle> {
-  try {
-    return await azureRecognition(opts);
-  } catch {
-    // Azure 不可 → ブラウザ標準にフォールバック
+  const canRecord =
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof MediaRecorder !== "undefined";
+
+  if (!canRecord) {
     return browserRecognition(opts);
   }
-}
 
-async function azureRecognition(opts: RecognitionOpts): Promise<RecognitionHandle> {
-  const sdk = await import("microsoft-cognitiveservices-speech-sdk");
-  const { token, region } = await getToken(); // 401 等ならここで throw → フォールバック
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    opts.onError?.("マイクへのアクセスが許可されませんでした");
+    return { stop: () => {} };
+  }
 
-  const speechConfig = sdk.SpeechConfig.fromAuthorizationToken(token, region);
-  speechConfig.speechRecognitionLanguage = opts.lang || "ja-JP";
+  const mime = pickMime();
+  const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  const chunks: Blob[] = [];
 
-  const audioConfig = sdk.AudioConfig.fromDefaultMicrophoneInput();
-  const recognizer: SpeechRecognizer = new sdk.SpeechRecognizer(speechConfig, audioConfig);
-
-  recognizer.recognizing = (_s, e) => {
-    if (e.result.text) opts.onPartial?.(e.result.text);
+  recorder.ondataavailable = (e) => {
+    if (e.data.size) chunks.push(e.data);
   };
-  recognizer.recognized = (_s, e) => {
-    if (e.result.reason === sdk.ResultReason.RecognizedSpeech && e.result.text) {
-      opts.onResult(e.result.text);
+  recorder.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    if (!chunks.length) return;
+    const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+    try {
+      const text = await transcribe(blob);
+      if (text) opts.onResult(text);
+    } catch (e) {
+      opts.onError?.(e instanceof Error ? e.message : "音声認識に失敗しました");
     }
   };
-  recognizer.canceled = (_s, e) => {
-    opts.onError?.(e.errorDetails || "音声認識がキャンセルされました");
-    recognizer.stopContinuousRecognitionAsync(() => recognizer.close());
-  };
 
-  await new Promise<void>((resolve, reject) => {
-    recognizer.startContinuousRecognitionAsync(
-      () => resolve(),
-      (err) => reject(new Error(String(err)))
-    );
-  });
-
+  recorder.start();
   return {
-    stop: () => recognizer.stopContinuousRecognitionAsync(() => recognizer.close()),
+    stop: () => {
+      if (recorder.state !== "inactive") recorder.stop();
+    },
   };
+}
+
+async function transcribe(blob: Blob): Promise<string> {
+  const ext = blob.type.includes("mp4")
+    ? "mp4"
+    : blob.type.includes("ogg")
+    ? "ogg"
+    : "webm";
+  const fd = new FormData();
+  fd.append("file", blob, `audio.${ext}`);
+  const res = await fetch("/api/speech/transcribe", { method: "POST", body: fd });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.error || `文字起こし失敗 (${res.status})`);
+  }
+  const data = await res.json();
+  return (data.text || "").trim();
+}
+
+function pickMime(): string | null {
+  if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return null;
+  const cands = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+  for (const c of cands) if (MediaRecorder.isTypeSupported(c)) return c;
+  return null;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -116,70 +125,69 @@ function browserRecognition(opts: RecognitionOpts): RecognitionHandle {
   } catch (e) {
     opts.onError?.(e instanceof Error ? e.message : "マイクを起動できませんでした");
   }
-  return { stop: () => { try { rec.stop(); } catch { /* noop */ } } };
+  return {
+    stop: () => {
+      try {
+        rec.stop();
+      } catch {
+        /* noop */
+      }
+    },
+  };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ===== TTS =====
 
-let activeSynth: SpeechSynthesizer | null = null;
+let activeAudio: HTMLAudioElement | null = null;
 
 export function stopSpeaking() {
-  if (activeSynth) {
+  if (activeAudio) {
     try {
-      activeSynth.close();
+      activeAudio.pause();
     } catch {
       /* noop */
     }
-    activeSynth = null;
+    activeAudio = null;
   }
   if (typeof window !== "undefined" && window.speechSynthesis) {
     window.speechSynthesis.cancel();
   }
 }
 
-export async function speak(text: string, voice = "ja-JP-NanamiNeural"): Promise<void> {
+export async function speak(text: string): Promise<void> {
   const clean = stripMarkdown(text);
   if (!clean.trim()) return;
   try {
-    await azureSpeak(clean, voice);
+    await openaiSpeak(clean);
   } catch {
     await browserSpeak(clean);
   }
 }
 
-async function azureSpeak(clean: string, voice: string): Promise<void> {
+async function openaiSpeak(clean: string): Promise<void> {
   stopSpeaking();
-  const sdk = await import("microsoft-cognitiveservices-speech-sdk");
-  const { token, region } = await getToken(); // 失敗 → throw → ブラウザTTS
+  const res = await fetch("/api/speech/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: clean }),
+  });
+  if (!res.ok) throw new Error("読み上げ失敗");
 
-  const speechConfig = sdk.SpeechConfig.fromAuthorizationToken(token, region);
-  speechConfig.speechSynthesisVoiceName = voice;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  activeAudio = audio;
 
-  const synth = new sdk.SpeechSynthesizer(speechConfig);
-  activeSynth = synth;
-
-  await new Promise<void>((resolve, reject) => {
-    synth.speakTextAsync(
-      clean,
-      (result) => {
-        synth.close();
-        if (activeSynth === synth) activeSynth = null;
-        // 認証/合成失敗時は reject してブラウザにフォールバック
-        if (
-          result.reason === sdk.ResultReason.Canceled
-        ) {
-          reject(new Error("Azure 合成失敗"));
-        } else {
-          resolve();
-        }
-      },
-      (err) => {
-        synth.close();
-        if (activeSynth === synth) activeSynth = null;
-        reject(new Error(String(err)));
-      }
-    );
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      URL.revokeObjectURL(url);
+      if (activeAudio === audio) activeAudio = null;
+      resolve();
+    };
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(() => done());
   });
 }
 
