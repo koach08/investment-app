@@ -135,9 +135,14 @@ async function callOpenAILike(
   }
   if (!keyOk(apiKey)) throw new Error(`${engine} APIキー未設定`);
   const client = new OpenAI({ apiKey, baseURL });
+  // GPT-5系は max_tokens 非対応 → max_completion_tokens を使う（reasoning分も含むため余裕を持たせる）
+  const tokenParam =
+    engine === "gpt4o"
+      ? { max_completion_tokens: 2400 }
+      : { max_tokens: 1100 };
   const res = await client.chat.completions.create({
     model,
-    max_tokens: 1100,
+    ...tokenParam,
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
