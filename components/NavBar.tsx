@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/macro", label: "🌐 マクロ" },
   { href: "/strategy", label: "📋 日別戦略" },
   { href: "/quant", label: "🧮 クオンツ" },
+  { href: "/council", label: "🏛️ 委員会" },
   { href: "/advisor", label: "🧠 アドバイザー" },
   { href: "/assets", label: "📊 資産管理" },
   { href: "/portfolio", label: "💼 PF管理" },
