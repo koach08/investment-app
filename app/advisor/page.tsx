@@ -8,6 +8,7 @@ import { generateSignal, atr } from "@/lib/indicators";
 import { parseAiJson } from "@/lib/json-utils";
 import { ChevronDown, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import { startRecognition, speak, stopSpeaking, type RecognitionHandle } from "@/lib/azure-speech";
+import { loadPositions, positionsBriefing } from "@/lib/positions";
 
 interface Pick {
   ticker: string;
@@ -771,6 +772,7 @@ export default function AdvisorPage() {
             ...marketContext,
             holdings,
             generatedStrategy: strategy,
+            positions: positionsBriefing(loadPositions()),
           },
         }),
         signal: abortController.signal,
