@@ -941,23 +941,23 @@ export default function AssetsPage() {
                 {mfData.breakdown.map((b) => {
                   const pct = mfData.totalAssets > 0 ? (b.amount / mfData.totalAssets) * 100 : 0;
                   return (
-                    <div key={b.name} className="flex items-center gap-3">
-                      <span className="text-sm w-44 text-zinc-400 truncate">{b.name}</span>
+                    <div key={b.name} className="flex items-center gap-2 sm:gap-3">
+                      <span className="text-sm w-24 sm:w-44 text-zinc-400 truncate">{b.name}</span>
                       <div className="flex-1 h-4 bg-zinc-800 rounded-full overflow-hidden">
                         <div className="h-full bg-blue-500/60 rounded-full" style={{ width: `${pct}%` }} />
                       </div>
-                      <span className="text-sm font-mono w-28 text-right">¥{b.amount.toLocaleString()}</span>
-                      <span className="text-xs text-zinc-500 w-14 text-right">{pct.toFixed(1)}%</span>
+                      <span className="text-sm font-mono w-20 sm:w-28 text-right">¥{b.amount.toLocaleString()}</span>
+                      <span className="text-xs text-zinc-500 w-12 sm:w-14 text-right">{pct.toFixed(1)}%</span>
                     </div>
                   );
                 })}
               </div>
               {mfData.totalLiabilities > 0 && (
-                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-zinc-800">
-                  <span className="text-sm w-44 text-red-400">負債（カード等）</span>
+                <div className="flex items-center gap-2 sm:gap-3 mt-2 pt-2 border-t border-zinc-800">
+                  <span className="text-sm w-24 sm:w-44 text-red-400">負債（カード等）</span>
                   <div className="flex-1" />
-                  <span className="text-sm font-mono w-28 text-right text-red-400">-¥{mfData.totalLiabilities.toLocaleString()}</span>
-                  <span className="text-xs text-zinc-500 w-14" />
+                  <span className="text-sm font-mono w-20 sm:w-28 text-right text-red-400">-¥{mfData.totalLiabilities.toLocaleString()}</span>
+                  <span className="text-xs text-zinc-500 w-12 sm:w-14" />
                 </div>
               )}
               <div className="text-xs text-zinc-600 mt-2">
