@@ -28,6 +28,7 @@ export interface ModelConfig {
   gemini: string;
   grok: string;
   perplexity: string;
+  sakana: string;
 }
 
 // ── Latest Model IDs (2026-03) ──────────────────────────────────
@@ -67,6 +68,13 @@ const MODELS = {
     STANDARD: "sonar-pro",                  // Sonar Pro — 深いWeb検索、200K context
     HEAVY: "sonar-pro",                     // Sonar Pro — ファクト精度最高
   },
+
+  // Sakana AI Fugu (OpenAI互換 — 複数フロンティアLLMを束ねるオーケストレーション・モデル)
+  sakana: {
+    LIGHT: "fugu",                          // Fugu — レイテンシと品質のバランス
+    STANDARD: "fugu",                       // Fugu — 通常の委員会用
+    HEAVY: "fugu-ultra",                    // Fugu Ultra — 複雑な多段推論、Fable 5級
+  },
 } as const;
 
 // ── Helper Functions ────────────────────────────────────────────
@@ -79,6 +87,7 @@ export function getModels(tier: ModelTier): ModelConfig {
     gemini: MODELS.gemini[tier],
     grok: MODELS.grok[tier],
     perplexity: MODELS.perplexity[tier],
+    sakana: MODELS.sakana[tier],
   };
 }
 

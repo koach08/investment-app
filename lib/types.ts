@@ -1,5 +1,5 @@
 export type SignalType = "BUY" | "WATCH_BUY" | "NEUTRAL" | "WATCH_SELL" | "SELL";
-export type EngineId = "claude" | "gpt4o" | "gemini" | "grok" | "perplexity";
+export type EngineId = "claude" | "gpt4o" | "gemini" | "grok" | "perplexity" | "sakana";
 
 export interface EngineResult {
   engine: EngineId;
@@ -250,5 +250,13 @@ export const ENGINE_CONFIG: Record<EngineId, {
     color: "#06B6D4",
     weight: 0.9,
     role: "情報収集 + 分析",
+  },
+  sakana: {
+    name: "Sakana Fugu",
+    icon: "🐡",
+    vendor: "Sakana AI",
+    color: "#F59E0B",
+    weight: 0.9,
+    role: "マルチエージェント統合",
   },
 };

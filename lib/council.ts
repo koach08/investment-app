@@ -68,7 +68,7 @@ export const PERSONAS: CouncilPersona[] = [
   {
     key: "bear",
     label: "🐻 弱気派",
-    engine: "grok",
+    engine: "sakana",
     brief:
       "あなたは弱気派・ショート専門のヘッジファンドマネージャー。下落シナリオ・空売りの根拠、強気派の見落とすリスクを徹底的に突く。逆張りの悪魔の代弁者として機能せよ。",
   },
@@ -114,7 +114,7 @@ async function callClaude(system: string, user: string, model = STANDARD.claude)
 }
 
 async function callOpenAILike(
-  engine: "gpt4o" | "grok" | "perplexity",
+  engine: "gpt4o" | "grok" | "perplexity" | "sakana",
   system: string,
   user: string
 ): Promise<string> {
@@ -128,6 +128,12 @@ async function callOpenAILike(
     apiKey = process.env.GROK_API_KEY;
     baseURL = "https://api.x.ai/v1";
     model = STANDARD.grok;
+  } else if (engine === "sakana") {
+    // Sakana Fugu — OpenAI互換。ベースURLはアカウント固有でコンソール発行のため env から取得。
+    apiKey = process.env.SAKANA_API_KEY;
+    baseURL = process.env.SAKANA_BASE_URL;
+    model = STANDARD.sakana;
+    if (!baseURL) throw new Error("SAKANA_BASE_URL未設定");
   } else {
     apiKey = process.env.PERPLEXITY_API_KEY;
     baseURL = "https://api.perplexity.ai";
@@ -163,7 +169,7 @@ async function callGemini(system: string, user: string): Promise<string> {
 async function callEngine(engine: EngineId, system: string, user: string): Promise<string> {
   if (engine === "claude") return callClaude(system, user);
   if (engine === "gemini") return callGemini(system, user);
-  return callOpenAILike(engine as "gpt4o" | "grok" | "perplexity", system, user);
+  return callOpenAILike(engine as "gpt4o" | "grok" | "perplexity" | "sakana", system, user);
 }
 
 function extractJson(text: string): Record<string, unknown> | null {
