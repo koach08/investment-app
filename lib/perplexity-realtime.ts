@@ -12,8 +12,13 @@ import OpenAI from "openai";
 
 const PERPLEXITY_BASE = "https://api.perplexity.ai";
 
+// Perplexity (Sonar) 無効化 (課金抑制): false の間は client() が常に null を返し、
+// 全リアルタイム取得が no-op 化される。再有効化は true に戻すだけ。
+const PERPLEXITY_ENABLED = false;
+
 let _client: OpenAI | null = null;
 function client(): OpenAI | null {
+  if (!PERPLEXITY_ENABLED) return null;
   if (_client) return _client;
   const key = process.env.PERPLEXITY_API_KEY;
   if (!key) return null;

@@ -52,10 +52,12 @@ ${sorted.map((h: HoldingInput) => {
   }
 
   // === Perplexity でリアルタイム情報取得 (株価/最新ニュース) ===
+  // Perplexity (Sonar Pro) 無効化 (課金抑制): リアルタイム取得はスキップ。
+  const PERPLEXITY_ENABLED = false;
   // ユーザー直近メッセージから ticker 抽出 OR 「現在/今/最新/株価」キーワードあれば実行
   let realtimeInfo = "";
   const lastUserMsg = [...messages].reverse().find((m: { role: string }) => m.role === "user")?.content as string | undefined;
-  if (lastUserMsg && process.env.PERPLEXITY_API_KEY) {
+  if (PERPLEXITY_ENABLED && lastUserMsg && process.env.PERPLEXITY_API_KEY) {
     const triggerKeywords = ["現在", "今の", "今日", "最新", "リアルタイム", "株価", "価格", "値段", "いくら"];
     const hasTrigger = triggerKeywords.some(k => lastUserMsg.includes(k));
     // メッセージから ticker 抽出 (例: "7203.T", "7203", "AAPL")

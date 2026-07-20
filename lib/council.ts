@@ -89,7 +89,8 @@ export const PERSONAS: CouncilPersona[] = [
   {
     key: "fact",
     label: "🌐 ファクト",
-    engine: "perplexity",
+    // Perplexity (Sonar Pro) 無効化 (課金抑制) のため gemini に振替。
+    engine: "gemini",
     brief:
       "あなたはリサーチ担当。最新のWeb情報で、対象銘柄/市場の直近の価格・決算・材料・ニュース・地政学イベントの事実関係を確認し、他の委員が古い前提で議論していないか事実で補正せよ。憶測は禁止、出典のある事実のみ。",
   },
@@ -135,9 +136,8 @@ async function callOpenAILike(
     model = STANDARD.sakana;
     if (!baseURL) throw new Error("SAKANA_BASE_URL未設定");
   } else {
-    apiKey = process.env.PERPLEXITY_API_KEY;
-    baseURL = "https://api.perplexity.ai";
-    model = STANDARD.perplexity;
+    // Perplexity 無効化 (課金抑制): 実 API を叩かせない。fact 人格は gemini に振替済み。
+    throw new Error("Perplexity 無効化中");
   }
   if (!keyOk(apiKey)) throw new Error(`${engine} APIキー未設定`);
   const client = new OpenAI({ apiKey, baseURL });

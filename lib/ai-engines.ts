@@ -182,30 +182,6 @@ async function analyzeGrok(prompt: string): Promise<EngineResult> {
   return parseResult(text, "grok", Date.now() - start);
 }
 
-async function analyzePerplexity(prompt: string): Promise<EngineResult> {
-  const start = Date.now();
-  const apiKey = process.env.PERPLEXITY_API_KEY;
-  if (!apiKey || apiKey.includes("ここに")) {
-    return { engine: "perplexity", status: "error", error: "APIキー未設定" };
-  }
-
-  const client = new OpenAI({
-    apiKey,
-    baseURL: "https://api.perplexity.ai",
-  });
-  const res = await client.chat.completions.create({
-    model: STANDARD.perplexity,
-    messages: [
-      { role: "system", content: "投資分析の専門家として、最新のWeb情報も参照しながら指定されたJSON形式で回答してください。" },
-      { role: "user", content: prompt },
-    ],
-    max_tokens: 800,
-  });
-
-  const text = res.choices[0]?.message?.content || "";
-  return parseResult(text, "perplexity", Date.now() - start);
-}
-
 export async function analyzeWithAllEngines(params: {
   ticker: string;
   signal: TechnicalSignal;
@@ -214,18 +190,17 @@ export async function analyzeWithAllEngines(params: {
   macroData?: MacroData[];
 }): Promise<EngineResult[]> {
   const prompt = buildPrompt(params);
-  const perplexityPrompt = buildPrompt({ ...params, isPerplexity: true });
 
+  // Perplexity (Sonar Pro) 無効化: 課金抑制のため consensus のファンアウトから除外。
   const results = await Promise.allSettled([
     analyzeClaude(prompt),
     analyzeGPT4o(prompt),
     analyzeGemini(prompt),
     analyzeGrok(prompt),
-    analyzePerplexity(perplexityPrompt),
   ]);
 
   return results.map((r, i) => {
-    const engines: EngineId[] = ["claude", "gpt4o", "gemini", "grok", "perplexity"];
+    const engines: EngineId[] = ["claude", "gpt4o", "gemini", "grok"];
     if (r.status === "fulfilled") {
       return r.value;
     }
