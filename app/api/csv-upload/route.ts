@@ -365,9 +365,11 @@ function parseSBIDistribution(lines: string[]): DividendRecord[] {
 
     if (amount === 0) continue;
 
-    // Determine currency
-    const isUSD = product.includes("米国") || product.includes("シンガポール");
-
+    // 受取金額は外国株の行も円建て・税引後で入っている。
+    // 例: コカ・コーラ 2025/12/16 は 49株で 2,781.05（1株 ¥56.8）。
+    // $0.485/株 × 158.94円 から米10%・日20.315%を引くと ¥55.3 でほぼ一致する。
+    // ドル建てなら1株 $49.7 となり成立しないため、通貨は JPY として記録する。
+    // 商品の別（米国株式か否か）は product 側で判別できる。
     dividends.push({
       date: dateStr,
       account: normalizeFullWidth(account),
@@ -376,7 +378,7 @@ function parseSBIDistribution(lines: string[]): DividendRecord[] {
       ticker: ticker || (code ? `${code}.T` : ""),
       quantity,
       amount,
-      currency: isUSD ? "USD" : "JPY",
+      currency: "JPY",
     });
   }
 

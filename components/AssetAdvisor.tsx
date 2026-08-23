@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { clsx } from "clsx";
 import { ShieldCheck, ShieldAlert, ShieldX, HelpCircle, Send, RotateCcw } from "lucide-react";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
+import { analyzeIncome, incomeToBriefing, type DividendLike } from "@/lib/income";
 import {
   analyzeAssetHealth,
   healthToBriefing,
@@ -19,6 +20,7 @@ interface Props {
   holdings: HoldingLike[];
   manualAssets: ManualAssetLike[];
   timeline: TimelinePointLike[];
+  dividends: DividendLike[];
   mfData: {
     totalAssets: number;
     totalLiabilities: number;
@@ -26,6 +28,8 @@ interface Props {
   } | null;
   /** MF が無いときのフォールバック総資産 */
   fallbackTotal: number;
+  /** 1 USD = 何円か。外貨建ての評価額を円に直すのに使う */
+  usdJpy?: number | null;
 }
 
 interface ChatMsg {
@@ -74,7 +78,9 @@ const STATUS_STYLE: Record<Status, { border: string; text: string; chip: string;
 
 const yen = (n: number) => `¥${Math.round(n).toLocaleString("ja-JP")}`;
 
-export default function AssetAdvisor({ holdings, manualAssets, timeline, mfData, fallbackTotal }: Props) {
+export default function AssetAdvisor({ holdings, manualAssets, timeline, dividends, mfData, fallbackTotal, usdJpy }: Props) {
+  const [fetchedUsdJpy, setFetchedUsdJpy] = useState<number | null>(null);
+  const rate = usdJpy ?? fetchedUsdJpy;
   const [monthlyExpense, setMonthlyExpense] = useState(0);
   const [targetMonths, setTargetMonths] = useState(6);
   const [expenseInput, setExpenseInput] = useState("");
@@ -87,6 +93,15 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, mfData,
   const [error, setError] = useState("");
   const [showBriefing, setShowBriefing] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 為替レートは親から来なければ自分で取りに行く
+  useEffect(() => {
+    if (usdJpy) return;
+    fetch("/api/metals-price")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.usdjpy) setFetchedUsdJpy(d.usdjpy); })
+      .catch(() => { /* ignore */ });
+  }, [usdJpy]);
 
   // 設定の読み込み（サーバー優先、無ければ localStorage）
   useEffect(() => {
@@ -137,11 +152,20 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, mfData,
       timeline,
       monthlyExpense,
       targetCashMonths: targetMonths,
+      fxRates: rate ? { USD: rate } : {},
     };
     return analyzeAssetHealth(payload);
-  }, [holdings, manualAssets, timeline, mfData, fallbackTotal, monthlyExpense, targetMonths]);
+  }, [holdings, manualAssets, timeline, mfData, fallbackTotal, monthlyExpense, targetMonths, rate]);
 
-  const briefing = useMemo(() => healthToBriefing(health, monthlyExpense), [health, monthlyExpense]);
+  const income = useMemo(
+    () => analyzeIncome(dividends, { totalAssets: health.totalAssets, riskAssets: health.riskAssets }),
+    [dividends, health.totalAssets, health.riskAssets]
+  );
+
+  const briefing = useMemo(
+    () => healthToBriefing(health, monthlyExpense) + incomeToBriefing(income),
+    [health, monthlyExpense, income]
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -223,6 +247,9 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, mfData,
               目標額 {yen(monthlyExpense * targetMonths)} / 現金 {yen(health.buckets.cash)}
             </div>
           )}
+          <div className="text-xs text-zinc-500 pb-2">
+            {rate ? `為替 1 USD = ${rate.toFixed(2)}円で換算` : "為替レート取得中（外貨建ては一時的に除外）"}
+          </div>
           {!settingsLoaded && <div className="text-xs text-zinc-600 pb-2">設定を読み込み中...</div>}
         </div>
       </div>
@@ -322,6 +349,152 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, mfData,
           </div>
         )}
       </div>
+
+      {/* ===== インカム（実測） ===== */}
+      {income.recordCount > 0 && (
+        <div className="border border-zinc-800 rounded-lg p-4">
+          <div className="flex items-baseline justify-between flex-wrap gap-2 mb-1">
+            <h3 className="text-sm font-semibold text-zinc-300">実際に入ってきたお金（配当・分配金）</h3>
+            <span className="text-xs text-zinc-600">円建て・税引後 / 基準 {income.anchorDate}</span>
+          </div>
+          <p className="text-xs text-zinc-600 mb-4">記録された受取額の実測です。これから増える見込みではありません。</p>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div className="border border-zinc-800 rounded-lg p-3">
+              <div className="text-xs text-zinc-500">直近12ヶ月</div>
+              <div className="text-2xl font-bold text-emerald-400 mt-1">{yen(income.last12m)}</div>
+              <div className="text-xs text-zinc-500 mt-1">月あたり {yen(income.monthlyAvg)}</div>
+            </div>
+            <div className="border border-zinc-800 rounded-lg p-3">
+              <div className="text-xs text-zinc-500">前の12ヶ月との差</div>
+              <div className={clsx("text-2xl font-bold mt-1", income.last12m >= income.prev12m ? "text-emerald-400" : "text-red-400")}>
+                {income.last12m >= income.prev12m ? "+" : "−"}{yen(Math.abs(income.last12m - income.prev12m))}
+              </div>
+              <div className="text-xs text-zinc-500 mt-1">前期 {yen(income.prev12m)}</div>
+            </div>
+            <div className="border border-zinc-800 rounded-lg p-3">
+              <div className="text-xs text-zinc-500">総資産に対する利回り</div>
+              <div className="text-2xl font-bold text-zinc-200 mt-1">
+                {income.yieldOnTotal === null ? "—" : `${income.yieldOnTotal.toFixed(2)}%`}
+              </div>
+              <div className="text-xs text-zinc-500 mt-1">
+                値動き資産だけなら {income.yieldOnRisk === null ? "—" : `${income.yieldOnRisk.toFixed(2)}%`}
+              </div>
+            </div>
+            <div className="border border-zinc-800 rounded-lg p-3">
+              <div className="text-xs text-zinc-500">記録全期間の累計</div>
+              <div className="text-2xl font-bold text-zinc-200 mt-1">{yen(income.allTime)}</div>
+              <div className="text-xs text-zinc-500 mt-1">{income.recordCount}件</div>
+            </div>
+          </div>
+
+          {/* 年別 */}
+          {income.byYear.length > 0 && (
+            <div className="mb-4">
+              <div className="text-xs text-zinc-500 mb-2">年別の受取額</div>
+              <div className="space-y-1.5">
+                {income.byYear.map((y) => {
+                  const max = Math.max(...income.byYear.map((v) => v.amount));
+                  const w = max > 0 ? (y.amount / max) * 100 : 0;
+                  return (
+                    <div key={y.year} className="flex items-center gap-2 text-sm">
+                      <span className="w-12 text-zinc-500 text-xs">{y.year}</span>
+                      <div className="flex-1 h-4 bg-zinc-900 rounded-full overflow-hidden">
+                        <div className="h-full bg-emerald-600/50 rounded-full" style={{ width: `${w}%` }} />
+                      </div>
+                      <span className="font-mono text-zinc-300 w-24 text-right whitespace-nowrap">{yen(y.amount)}</span>
+                      <span className="text-xs text-zinc-600 w-12 text-right">{y.count}件</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            {/* 出どころ */}
+            {income.topContributors.length > 0 && (
+              <div>
+                <div className="text-xs text-zinc-500 mb-2">直近12ヶ月の出どころ</div>
+                <div className="space-y-1.5">
+                  {income.topContributors.map((t) => (
+                    <div key={t.name} className="flex items-center gap-2 text-sm">
+                      <span className="flex-1 truncate text-zinc-300">{t.name}</span>
+                      <span className="font-mono text-zinc-400 whitespace-nowrap">{yen(t.amount)}</span>
+                      <span className="font-mono text-zinc-600 w-12 text-right">{t.pct.toFixed(0)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* 口座別 */}
+            {income.byAccount.length > 0 && (
+              <div>
+                <div className="text-xs text-zinc-500 mb-2">口座別（直近12ヶ月）</div>
+                <div className="space-y-1.5">
+                  {income.byAccount.map((a) => (
+                    <div key={a.account} className="flex items-center gap-2 text-sm">
+                      <span className="flex-1 truncate text-zinc-300">
+                        {a.account}
+                        {a.taxFree && <span className="text-[10px] text-emerald-500 ml-1.5">非課税</span>}
+                      </span>
+                      <span className="font-mono text-zinc-400 whitespace-nowrap">{yen(a.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 目標インカムの逆算 */}
+          {income.yieldOnTotal !== null && income.yieldOnTotal > 0 && (
+            <div>
+              <div className="text-xs text-zinc-500 mb-1">月いくら受け取るのに、いくら必要か</div>
+              <p className="text-[11px] text-zinc-600 mb-2">
+                いまと同じ構成・同じ利回り（{income.yieldOnTotal.toFixed(2)}%）が続いた場合の割り算です。将来の利回りを見込んだ数字ではありません。
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm min-w-[420px]">
+                  <thead>
+                    <tr className="text-xs text-zinc-500 border-b border-zinc-800">
+                      <th className="text-left py-1.5 font-normal">月の受取</th>
+                      <th className="text-right py-1.5 font-normal">必要な総資産</th>
+                      <th className="text-right py-1.5 font-normal">いまとの差</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {income.targets.map((t) => (
+                      <tr key={t.monthlyTarget} className="border-b border-zinc-900 last:border-0">
+                        <td className="py-1.5 text-zinc-300">{yen(t.monthlyTarget)}</td>
+                        <td className="py-1.5 text-right font-mono text-zinc-400 whitespace-nowrap">
+                          {t.requiredPrincipal === null ? "—" : yen(t.requiredPrincipal)}
+                        </td>
+                        <td className="py-1.5 text-right font-mono whitespace-nowrap">
+                          {t.additionalNeeded === null ? (
+                            "—"
+                          ) : t.additionalNeeded === 0 ? (
+                            <span className="text-emerald-400">達成済み</span>
+                          ) : (
+                            <span className="text-zinc-500">+{yen(t.additionalNeeded)}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {income.notes.length > 0 && (
+            <ul className="mt-3 space-y-1">
+              {income.notes.map((n, i) => (
+                <li key={i} className="text-[11px] text-zinc-600 leading-relaxed">・{n}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* ===== 上位保有・含み損 ===== */}
       {(health.topPositions.length > 0 || health.lossMakers.length > 0) && (

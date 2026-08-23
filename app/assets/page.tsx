@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { clsx } from "clsx";
 import AssetAdvisor from "@/components/AssetAdvisor";
+import { normalizeHoldings, toJpy } from "@/lib/fx";
 
 interface Holding {
   source: string;
@@ -785,18 +786,24 @@ export default function AssetsPage() {
   const removeManualAsset = (index: number) => setManualAssets(manualAssets.filter((_, i) => i !== index));
   const removeHolding = (index: number) => setHoldings(holdings.filter((_, i) => i !== index));
 
-  const holdingsTotal = holdings.reduce((sum, h) => sum + h.marketValue, 0);
-  const manualTotal = manualAssets.reduce((sum, a) => sum + a.amount, 0);
+  // 外貨建ては現地通貨のまま入っているので、合算する前に円へ揃える
+  const fxRates = metalsData?.usdjpy ? { USD: metalsData.usdjpy } : {};
+  const normalized = normalizeHoldings(holdings, fxRates);
+  const holdingsTotal = normalized.rows.reduce((sum, h) => sum + h.marketValue, 0);
+  const manualTotal = manualAssets.reduce((sum, a) => sum + (toJpy(a.amount, a.currency, fxRates) ?? 0), 0);
   const securitiesTotal = holdingsTotal + manualTotal;
-  const totalPnl = holdings.reduce((sum, h) => sum + h.pnl, 0);
+  const totalPnl = normalized.rows.reduce((sum, h) => sum + h.pnl, 0);
 
   // Use MF data as primary source, then timeline, then securities-only
   const latestTimeline = timelineWithToday.length > 0 ? timelineWithToday[timelineWithToday.length - 1] : null;
   const grandTotal = mfData ? mfData.totalAssets : latestTimeline ? latestTimeline.total : securitiesTotal;
 
   const categoryTotals: Record<string, number> = {};
-  holdings.forEach((h) => { categoryTotals[h.category] = (categoryTotals[h.category] || 0) + h.marketValue; });
-  manualAssets.forEach((a) => { categoryTotals[a.category] = (categoryTotals[a.category] || 0) + a.amount; });
+  normalized.rows.forEach((h) => { categoryTotals[h.category] = (categoryTotals[h.category] || 0) + h.marketValue; });
+  manualAssets.forEach((a) => {
+    const jpy = toJpy(a.amount, a.currency, fxRates);
+    if (jpy !== null) categoryTotals[a.category] = (categoryTotals[a.category] || 0) + jpy;
+  });
 
   // Dividend summary
   const dividendTotal = useMemo(() => dividends.reduce((s, d) => s + d.amount, 0), [dividends]);
@@ -851,8 +858,10 @@ export default function AssetsPage() {
           holdings={holdings}
           manualAssets={manualAssets}
           timeline={timelineWithToday}
+          dividends={dividends}
           mfData={mfData}
           fallbackTotal={grandTotal}
+          usdJpy={metalsData?.usdjpy ?? null}
         />
       )}
 

@@ -5,6 +5,8 @@
  * ここは純粋関数のみ。fetch も localStorage も触らない（テスト可能に保つ）。
  */
 
+import { normalizeHoldings, toJpy, type FxRates } from "@/lib/fx";
+
 export type Status = "good" | "warn" | "bad" | "unknown";
 export type Horizon = "short" | "mid" | "long";
 
@@ -50,6 +52,8 @@ export interface HealthInput {
   timeline: TimelinePointLike[];
   /** 生活費（月額・円）。未設定なら 0 を渡す */
   monthlyExpense: number;
+  /** 為替レート。外貨建ての評価額を円に直すのに使う */
+  fxRates?: FxRates;
   /** 生活防衛資金の目標月数。既定 6ヶ月 */
   targetCashMonths?: number;
 }
@@ -294,10 +298,38 @@ export function computeMaxDrawdown(
   return worst.pct > 0 ? worst : null;
 }
 
-export function analyzeAssetHealth(input: HealthInput): AssetHealth {
+export function analyzeAssetHealth(rawInput: HealthInput): AssetHealth {
+  const fxRates = rawInput.fxRates ?? {};
+  const preGaps: string[] = [];
+
+  // 外貨建ての評価額を円に揃える。ここを飛ばすと桁がずれたまま合算される
+  const normalized = normalizeHoldings(rawInput.holdings, fxRates);
+  if (normalized.unconverted.length > 0) {
+    const names = normalized.unconverted.map((u) => `${u.name}(${u.currency})`).join(", ");
+    preGaps.push(
+      `為替レートが取れず円に換算できなかった保有が ${normalized.unconverted.length}件あります（${names}）。この分は診断から除いています。`
+    );
+  }
+  const normalizedManual = rawInput.manualAssets.map((m) => {
+    const amount = toJpy(m.amount, m.currency, fxRates);
+    return amount === null ? null : { ...m, amount };
+  });
+  const droppedManual = normalizedManual.filter((m) => m === null).length;
+  if (droppedManual > 0) {
+    preGaps.push(`手動入力のうち ${droppedManual}件は為替レートが無く円に換算できないため、診断から除いています。`);
+  }
+
+  const input: HealthInput = {
+    ...rawInput,
+    holdings: normalized.rows,
+    manualAssets: normalizedManual.filter((m): m is NonNullable<typeof m> => m !== null),
+  };
+
+  const foreignRows = normalized.rows.filter((h) => h.originalCurrency !== "JPY");
+
   const targetMonths = input.targetCashMonths ?? 6;
   const { buckets, positions, notes } = buildBuckets(input);
-  const gaps: string[] = [...notes];
+  const gaps: string[] = [...preGaps, ...notes];
 
   if (input.monthlyExpense <= 0) gaps.push("月の生活費が未設定です。生活防衛資金と下落後の耐久月数は判定できません。");
   if (input.timeline.length < 3) gaps.push("資産推移の記録が3点未満のため、実測の最大下落は出せません。");
@@ -321,8 +353,8 @@ export function analyzeAssetHealth(input: HealthInput): AssetHealth {
 
   // 外貨エクスポージャー（銘柄レベルの通貨と手動入力から）
   const foreignValue =
-    input.holdings.filter((h) => h.currency && h.currency !== "JPY").reduce((s, h) => s + h.marketValue, 0) +
-    input.manualAssets.filter((m) => m.currency && m.currency !== "JPY").reduce((s, m) => s + m.amount, 0);
+    foreignRows.reduce((s, h) => s + h.marketValue, 0) +
+    input.manualAssets.filter((m) => m.currency && m.currency.toUpperCase() !== "JPY").reduce((s, m) => s + m.amount, 0);
   const foreignPct = totalAssets > 0 ? (foreignValue / totalAssets) * 100 : 0;
   // 投信・ラップ・内訳未取得分は中身の通貨が分からない
   const fxOpaque = buckets.funds + buckets.unclassified;
