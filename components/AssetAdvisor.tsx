@@ -39,6 +39,9 @@ interface ChatMsg {
 }
 
 const SETTINGS_KEY = "investment-app-asset-settings";
+const CHAT_KEY = "investment-app-advisor-chat";
+/** 保存する会話の上限。これを超えたら古いものから捨てる */
+const CHAT_LIMIT = 40;
 
 interface AssetSettings {
   monthlyExpense: number;
@@ -137,6 +140,7 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   const [settings, setSettings] = useState<AssetSettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showQuotaInputs, setShowQuotaInputs] = useState(false);
+  const [chatLoaded, setChatLoaded] = useState(false);
   const monthlyExpense = settings.monthlyExpense;
   const targetMonths = settings.targetMonths;
 
@@ -184,6 +188,40 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
     };
     load();
   }, []);
+
+  // 会話の読み込み。相談窓口なので、閉じても続きから話せるようにする
+  useEffect(() => {
+    const load = async () => {
+      let saved: { messages?: ChatMsg[]; horizon?: Horizon | "all" } | null = null;
+      try {
+        const res = await fetch("/api/save-data?key=advisor-chat");
+        const json = await res.json();
+        if (json?.data && typeof json.data === "object") saved = json.data;
+      } catch { /* ignore */ }
+      if (!saved) {
+        try {
+          const local = localStorage.getItem(CHAT_KEY);
+          if (local) saved = JSON.parse(local);
+        } catch { /* ignore */ }
+      }
+      if (saved?.messages && Array.isArray(saved.messages) && saved.messages.length > 0) {
+        setMessages(saved.messages.filter((m) => m && typeof m.content === "string"));
+        if (saved.horizon) setHorizon(saved.horizon);
+      }
+      setChatLoaded(true);
+    };
+    load();
+  }, []);
+
+  const persistChat = (msgs: ChatMsg[], h: Horizon | "all") => {
+    const payload = { messages: msgs.slice(-CHAT_LIMIT), horizon: h, updatedAt: new Date().toISOString() };
+    try { localStorage.setItem(CHAT_KEY, JSON.stringify(payload)); } catch { /* ignore */ }
+    fetch("/api/save-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "advisor-chat", data: payload }),
+    }).catch(() => { /* ignore */ });
+  };
 
   const persist = (next: AssetSettings) => {
     setSettings(next);
@@ -301,9 +339,12 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
       if (streamError) {
         setError(streamError);
         if (!acc) setMessages(next);
+        else persistChat([...next, { role: "assistant", content: acc }], horizon);
       } else if (!acc) {
         setError("回答が空で返りました。もう一度試してください。");
         setMessages(next);
+      } else {
+        persistChat([...next, { role: "assistant", content: acc }], horizon);
       }
     } catch {
       setError("相談窓口との通信に失敗しました");
@@ -746,7 +787,11 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
             </button>
             {messages.length > 0 && (
               <button
-                onClick={() => { setMessages([]); setError(""); }}
+                onClick={() => {
+                  setMessages([]);
+                  setError("");
+                  persistChat([], horizon);
+                }}
                 className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
               >
                 <RotateCcw className="w-3 h-3" />履歴を消す
@@ -779,6 +824,7 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
         </div>
 
         {/* 会話 */}
+        {!chatLoaded && <div className="text-xs text-zinc-600 mb-3">前回の相談を読み込み中...</div>}
         {messages.length > 0 && (
           <div className="space-y-3 mb-3 max-h-[520px] overflow-y-auto pr-1">
             {messages.map((m, i) =>
