@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { clsx } from "clsx";
+import AssetAdvisor from "@/components/AssetAdvisor";
 
 interface Holding {
   source: string;
@@ -92,10 +93,10 @@ const DIVIDENDS_KEY = "investment-app-dividends";
 const SUMMARY_KEY = "investment-app-summary";
 const TIMELINE_KEY = "investment-app-timeline";
 
-type TabKey = "overview" | "sync" | "upload" | "paste" | "dividends" | "timeline" | "manual";
+type TabKey = "advisor" | "overview" | "sync" | "upload" | "paste" | "dividends" | "timeline" | "manual";
 
 export default function AssetsPage() {
-  const [activeTab, setActiveTab] = useState<TabKey>("overview");
+  const [activeTab, setActiveTab] = useState<TabKey>("advisor");
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [manualAssets, setManualAssets] = useState<ManualAsset[]>([]);
   const [dividends, setDividends] = useState<DividendRecord[]>([]);
@@ -822,6 +823,7 @@ export default function AssetsPage() {
       {/* Tabs */}
       <div className="flex gap-1 mb-6 overflow-x-auto">
         {[
+          { key: "advisor", label: "診断・相談" },
           { key: "overview", label: "資産全体" },
           { key: "sync", label: "自動連携" },
           { key: "upload", label: "CSV取り込み" },
@@ -842,6 +844,17 @@ export default function AssetsPage() {
           </button>
         ))}
       </div>
+
+      {/* ===== ADVISOR (診断・相談) ===== */}
+      {activeTab === "advisor" && (
+        <AssetAdvisor
+          holdings={holdings}
+          manualAssets={manualAssets}
+          timeline={timelineWithToday}
+          mfData={mfData}
+          fallbackTotal={grandTotal}
+        />
+      )}
 
       {/* ===== OVERVIEW ===== */}
       {activeTab === "overview" && (
