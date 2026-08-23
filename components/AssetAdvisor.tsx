@@ -5,6 +5,7 @@ import { clsx } from "clsx";
 import { ShieldCheck, ShieldAlert, ShieldX, HelpCircle, Send, RotateCcw } from "lucide-react";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { analyzeIncome, incomeToBriefing, type DividendLike } from "@/lib/income";
+import { analyzeTaxAccounts, taxAccountsToBriefing, taxSavedPerYear } from "@/lib/tax-accounts";
 import {
   analyzeAssetHealth,
   healthToBriefing,
@@ -38,6 +39,58 @@ interface ChatMsg {
 }
 
 const SETTINGS_KEY = "investment-app-asset-settings";
+
+interface AssetSettings {
+  monthlyExpense: number;
+  targetMonths: number;
+  tsumitateUsed: number;
+  growthUsed: number;
+  lifetimeUsed: number;
+  lifetimeGrowthUsed: number;
+  idecoMonthly: number;
+  idecoMonthlyLimit: number;
+}
+
+const DEFAULT_SETTINGS: AssetSettings = {
+  monthlyExpense: 0,
+  targetMonths: 6,
+  tsumitateUsed: 0,
+  growthUsed: 0,
+  lifetimeUsed: 0,
+  lifetimeGrowthUsed: 0,
+  idecoMonthly: 0,
+  idecoMonthlyLimit: 0,
+};
+
+/** 数値入力。打っている途中は文字列で持ち、離れたときに確定する */
+function NumberField({
+  label, value, onCommit, placeholder, width = "w-40",
+}: {
+  label: string;
+  value: number;
+  onCommit: (v: number) => void;
+  placeholder?: string;
+  width?: string;
+}) {
+  const [draft, setDraft] = useState(value > 0 ? String(value) : "");
+  useEffect(() => { setDraft(value > 0 ? String(value) : ""); }, [value]);
+  return (
+    <div>
+      <label className="block text-xs text-zinc-500 mb-1">{label}</label>
+      <input
+        type="number"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          const v = parseFloat(draft);
+          onCommit(Number.isFinite(v) && v > 0 ? v : 0);
+        }}
+        placeholder={placeholder}
+        className={clsx(width, "bg-zinc-900 border border-zinc-700 rounded px-3 py-1.5 text-sm")}
+      />
+    </div>
+  );
+}
 
 const HORIZON_TABS: { key: Horizon | "all"; label: string; note: string }[] = [
   { key: "all", label: "全体", note: "短期・中期・長期をまとめて" },
@@ -81,10 +134,11 @@ const yen = (n: number) => `¥${Math.round(n).toLocaleString("ja-JP")}`;
 export default function AssetAdvisor({ holdings, manualAssets, timeline, dividends, mfData, fallbackTotal, usdJpy }: Props) {
   const [fetchedUsdJpy, setFetchedUsdJpy] = useState<number | null>(null);
   const rate = usdJpy ?? fetchedUsdJpy;
-  const [monthlyExpense, setMonthlyExpense] = useState(0);
-  const [targetMonths, setTargetMonths] = useState(6);
-  const [expenseInput, setExpenseInput] = useState("");
+  const [settings, setSettings] = useState<AssetSettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [showQuotaInputs, setShowQuotaInputs] = useState(false);
+  const monthlyExpense = settings.monthlyExpense;
+  const targetMonths = settings.targetMonths;
 
   const [horizon, setHorizon] = useState<Horizon | "all">("all");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -106,7 +160,7 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   // 設定の読み込み（サーバー優先、無ければ localStorage）
   useEffect(() => {
     const load = async () => {
-      let s: { monthlyExpense?: number; targetMonths?: number } | null = null;
+      let s: Partial<AssetSettings> | null = null;
       try {
         const res = await fetch("/api/save-data?key=asset-settings");
         const json = await res.json();
@@ -119,28 +173,28 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
         } catch { /* ignore */ }
       }
       if (s) {
-        if (typeof s.monthlyExpense === "number") {
-          setMonthlyExpense(s.monthlyExpense);
-          setExpenseInput(s.monthlyExpense > 0 ? String(s.monthlyExpense) : "");
+        const merged = { ...DEFAULT_SETTINGS };
+        for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof AssetSettings)[]) {
+          const v = s[k];
+          if (typeof v === "number" && Number.isFinite(v)) merged[k] = v;
         }
-        if (typeof s.targetMonths === "number") setTargetMonths(s.targetMonths);
+        setSettings(merged);
       }
       setSettingsLoaded(true);
     };
     load();
   }, []);
 
-  const persistSettings = async (expense: number, months: number) => {
-    const payload = { monthlyExpense: expense, targetMonths: months };
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(payload)); } catch { /* ignore */ }
-    try {
-      await fetch("/api/save-data", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "asset-settings", data: payload }),
-      });
-    } catch { /* ignore */ }
+  const persist = (next: AssetSettings) => {
+    setSettings(next);
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    fetch("/api/save-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "asset-settings", data: next }),
+    }).catch(() => { /* ignore */ });
   };
+  const setField = (key: keyof AssetSettings) => (v: number) => persist({ ...settings, [key]: v });
 
   const health = useMemo(() => {
     const payload: HealthInput = {
@@ -162,9 +216,30 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
     [dividends, health.totalAssets, health.riskAssets]
   );
 
+  const investableCash = Math.max(0, health.buckets.cash - monthlyExpense * targetMonths);
+
+  const tax = useMemo(
+    () =>
+      analyzeTaxAccounts({
+        tsumitateUsedThisYear: settings.tsumitateUsed,
+        growthUsedThisYear: settings.growthUsed,
+        lifetimeUsed: settings.lifetimeUsed,
+        lifetimeGrowthUsed: settings.lifetimeGrowthUsed,
+        idecoMonthly: settings.idecoMonthly,
+        idecoMonthlyLimit: settings.idecoMonthlyLimit,
+        investableCash,
+      }),
+    [settings, investableCash]
+  );
+
+  const taxSaved = useMemo(
+    () => taxSavedPerYear(tax.annual.remaining, income.yieldOnTotal),
+    [tax.annual.remaining, income.yieldOnTotal]
+  );
+
   const briefing = useMemo(
-    () => healthToBriefing(health, monthlyExpense) + incomeToBriefing(income),
-    [health, monthlyExpense, income]
+    () => healthToBriefing(health, monthlyExpense) + incomeToBriefing(income) + taxAccountsToBriefing(tax),
+    [health, monthlyExpense, income, tax]
   );
 
   useEffect(() => {
@@ -210,31 +285,17 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
       <div className="border border-zinc-800 rounded-lg p-4">
         <h3 className="text-sm font-semibold text-zinc-400 mb-3">診断の前提</h3>
         <div className="flex flex-wrap items-end gap-4">
-          <div>
-            <label className="block text-xs text-zinc-500 mb-1">月の生活費（円）</label>
-            <input
-              type="number"
-              value={expenseInput}
-              onChange={(e) => setExpenseInput(e.target.value)}
-              onBlur={() => {
-                const v = parseFloat(expenseInput);
-                const next = Number.isFinite(v) && v > 0 ? v : 0;
-                setMonthlyExpense(next);
-                persistSettings(next, targetMonths);
-              }}
-              placeholder="例: 250000"
-              className="w-40 bg-zinc-900 border border-zinc-700 rounded px-3 py-1.5 text-sm"
-            />
-          </div>
+          <NumberField
+            label="月の生活費（円）"
+            value={settings.monthlyExpense}
+            onCommit={setField("monthlyExpense")}
+            placeholder="例: 250000"
+          />
           <div>
             <label className="block text-xs text-zinc-500 mb-1">生活防衛資金の目標</label>
             <select
-              value={targetMonths}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                setTargetMonths(v);
-                persistSettings(monthlyExpense, v);
-              }}
+              value={settings.targetMonths}
+              onChange={(e) => persist({ ...settings, targetMonths: parseInt(e.target.value, 10) })}
               className="bg-zinc-900 border border-zinc-700 rounded px-3 py-1.5 text-sm"
             >
               {[3, 6, 12, 24].map((m) => (
@@ -251,6 +312,89 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
             {rate ? `為替 1 USD = ${rate.toFixed(2)}円で換算` : "為替レート取得中（外貨建ては一時的に除外）"}
           </div>
           {!settingsLoaded && <div className="text-xs text-zinc-600 pb-2">設定を読み込み中...</div>}
+        </div>
+      </div>
+
+      {/* ===== 非課税枠 ===== */}
+      <div className="border border-zinc-800 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold text-zinc-300">非課税枠（{tax.year}年）</h3>
+          <button
+            onClick={() => setShowQuotaInputs((v) => !v)}
+            className="text-xs text-zinc-500 hover:text-zinc-300"
+          >
+            {showQuotaInputs ? "入力欄を閉じる" : "使用額を入力"}
+          </button>
+        </div>
+        <p className="text-xs text-zinc-600 mb-3">
+          年内の残りは {tax.monthsLeft}ヶ月。生涯枠は簿価で数えるので、値上がり分は枠を減らしません。
+        </p>
+
+        {showQuotaInputs && (
+          <div className="flex flex-wrap gap-4 mb-4 pb-4 border-b border-zinc-800">
+            <NumberField label="今年のつみたて投資枠 使用額" value={settings.tsumitateUsed} onCommit={setField("tsumitateUsed")} placeholder="0" />
+            <NumberField label="今年の成長投資枠 使用額" value={settings.growthUsed} onCommit={setField("growthUsed")} placeholder="0" />
+            <NumberField label="生涯枠の使用額（簿価）" value={settings.lifetimeUsed} onCommit={setField("lifetimeUsed")} placeholder="0" />
+            <NumberField label="うち成長投資枠分" value={settings.lifetimeGrowthUsed} onCommit={setField("lifetimeGrowthUsed")} placeholder="0" />
+            <NumberField label="iDeCo 掛金（月）" value={settings.idecoMonthly} onCommit={setField("idecoMonthly")} placeholder="0" width="w-32" />
+            <NumberField label="iDeCo 上限（月）" value={settings.idecoMonthlyLimit} onCommit={setField("idecoMonthlyLimit")} placeholder="例: 12000" width="w-32" />
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {[
+            { key: "tsumitate", label: "つみたて投資枠", f: tax.tsumitate },
+            { key: "growth", label: "成長投資枠", f: tax.growth },
+          ].map(({ key, label, f }) => (
+            <div key={key} className="border border-zinc-800 rounded-lg p-3">
+              <div className="text-xs text-zinc-500">{label}（年 {yen(f.limit)}）</div>
+              <div className="text-xl font-bold text-zinc-200 mt-1">残り {yen(f.remaining)}</div>
+              <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden my-2">
+                <div className="h-full bg-emerald-600/60 rounded-full" style={{ width: `${Math.min(100, f.usedPct)}%` }} />
+              </div>
+              <div className="text-xs text-zinc-500">
+                使用 {yen(f.used)}
+                {f.remaining > 0 && <> / 年内に使い切るなら月 {yen(f.perMonth)}</>}
+              </div>
+            </div>
+          ))}
+          <div className="border border-zinc-800 rounded-lg p-3">
+            <div className="text-xs text-zinc-500">生涯枠（{yen(tax.lifetime.limit)}）</div>
+            <div className="text-xl font-bold text-zinc-200 mt-1">残り {yen(tax.lifetime.remaining)}</div>
+            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden my-2">
+              <div
+                className="h-full bg-blue-600/60 rounded-full"
+                style={{ width: `${Math.min(100, (tax.lifetime.used / tax.lifetime.limit) * 100)}%` }}
+              />
+            </div>
+            <div className="text-xs text-zinc-500">
+              うち成長投資枠 残り {yen(tax.lifetime.growthRemaining)}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 space-y-1.5 text-xs">
+          <div className={clsx(tax.canFillAnnual ? "text-emerald-400" : "text-amber-400")}>
+            投資に回せる現金 {yen(investableCash)}（現金 {yen(health.buckets.cash)} − 生活防衛資金 {yen(monthlyExpense * targetMonths)}）
+            {tax.canFillAnnual
+              ? " → 年内の残枠は現金で埋められます"
+              : ` → 年内の残枠を埋めるには ${yen(tax.shortfall)} 足りません`}
+          </div>
+          {taxSaved !== null && tax.annual.remaining > 0 && (
+            <div className="text-zinc-500">
+              残枠 {yen(tax.annual.remaining)} を非課税で埋めた場合、いまと同じインカム利回りが続けば
+              年 {yen(taxSaved)} ぶんの税を払わずに済む計算になります（値上がり分は含みません）。
+            </div>
+          )}
+          {tax.ideco && (
+            <div className="text-zinc-500">
+              iDeCo: 掛金 月{yen(tax.ideco.monthly)} / 上限 月{yen(tax.ideco.limit)}
+              {tax.ideco.monthlyRemaining > 0 && ` — 月 ${yen(tax.ideco.monthlyRemaining)} 増やす余地があります`}
+            </div>
+          )}
+          {tax.notes.map((n, i) => (
+            <div key={i} className="text-zinc-600">・{n}</div>
+          ))}
         </div>
       </div>
 
