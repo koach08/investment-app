@@ -253,21 +253,61 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
     setMessages(next);
     setInput("");
     setAsking(true);
+
     try {
       const res = await fetch("/api/asset-advisor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: next, briefing, horizon }),
       });
-      const data = await res.json();
-      if (data.error) {
-        setError(data.error);
+
+      // 生成に入る前に落ちた場合は JSON でエラーが返る
+      if (!res.body || !res.headers.get("content-type")?.includes("ndjson")) {
+        const data = await res.json().catch(() => null);
+        setError(data?.error ?? "相談窓口との通信に失敗しました");
+        setAsking(false);
+        return;
+      }
+
+      setMessages([...next, { role: "assistant", content: "" }]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let acc = "";
+      let streamError = "";
+
+      const flushLine = (line: string) => {
+        if (!line.trim()) return;
+        try {
+          const obj = JSON.parse(line) as { t?: string; e?: string };
+          if (obj.e) streamError = obj.e;
+          if (obj.t) {
+            acc += obj.t;
+            setMessages([...next, { role: "assistant", content: acc }]);
+          }
+        } catch { /* 途中で切れた行は次のチャンクと繋ぐ */ }
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) flushLine(line);
+      }
+      flushLine(buffer);
+
+      if (streamError) {
+        setError(streamError);
+        if (!acc) setMessages(next);
+      } else if (!acc) {
+        setError("回答が空で返りました。もう一度試してください。");
         setMessages(next);
-      } else {
-        setMessages([...next, { role: "assistant", content: data.reply }]);
       }
     } catch {
       setError("相談窓口との通信に失敗しました");
+      setMessages(next);
     }
     setAsking(false);
   };
@@ -759,7 +799,9 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
         {asking && (
           <div className="text-xs text-zinc-500 flex items-center gap-2 mb-3">
             <span className="animate-spin inline-block w-3 h-3 border-2 border-zinc-600 border-t-zinc-300 rounded-full" />
-            資産データを読んで考えています...
+            {messages[messages.length - 1]?.role === "assistant" && messages[messages.length - 1]?.content
+              ? "書いています..."
+              : "資産データを読んで考えています..."}
           </div>
         )}
         {error && <div className="text-xs text-red-400 mb-3">{error}</div>}

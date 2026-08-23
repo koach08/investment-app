@@ -86,26 +86,43 @@ export async function POST(request: NextRequest) {
     marketContext ? `\n## 市場コンテキスト\n${JSON.stringify(marketContext)}` : "",
   ].join("\n");
 
-  try {
-    const client = new Anthropic({ apiKey });
-    const anthropicMessages = messages.map((m) => ({
-      role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
-      content: m.content,
-    }));
+  const client = new Anthropic({ apiKey });
+  const anthropicMessages = messages.map((m) => ({
+    role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
+    content: m.content,
+  }));
 
-    const message = await client.messages.create({
-      model: HEAVY.claude,
-      max_tokens: MAX_TOKENS.STANDARD,
-      system: systemPrompt,
-      messages: anthropicMessages,
-    });
+  // 長い回答だと生成に数十秒かかる。まとめて返すと関数の実行時間の上限に
+  // ぶつかるうえ、その間ずっと画面が止まって見えるので少しずつ流す。
+  // 形式は NDJSON: {"t":"本文の断片"} / {"e":"エラー"}
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (obj: { t: string } | { e: string }) => {
+        controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+      };
+      try {
+        const run = client.messages.stream({
+          model: HEAVY.claude,
+          max_tokens: MAX_TOKENS.STANDARD,
+          system: systemPrompt,
+          messages: anthropicMessages,
+        });
+        run.on("text", (delta: string) => send({ t: delta }));
+        await run.finalMessage();
+      } catch (e) {
+        send({ e: `相談に失敗しました: ${e instanceof Error ? e.message : "unknown"}` });
+      } finally {
+        controller.close();
+      }
+    },
+  });
 
-    const text = message.content.find((b) => b.type === "text")?.text ?? "";
-    return NextResponse.json({ reply: text });
-  } catch (e) {
-    return NextResponse.json(
-      { error: `相談に失敗しました: ${e instanceof Error ? e.message : "unknown"}` },
-      { status: 500 }
-    );
-  }
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }
