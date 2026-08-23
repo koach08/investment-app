@@ -166,3 +166,56 @@ test("ストレスシナリオの下落額は値動きする資産に比例す�
   // 現金は減らない
   assert.equal(health.buckets.cash, 5_000_000);
 });
+
+test("中身が未登録なら実質の外貨比率は出さない", () => {
+  const health = analyzeAssetHealth(
+    base({
+      totalAssets: 10_000_000,
+      holdings: [
+        h({ source: "mf-auto", name: "みずほ銀行", category: "預金・現金", marketValue: 5_000_000 }),
+        h({ source: "mf-auto", name: "WealthNavi", category: "投資信託", marketValue: 5_000_000 }),
+      ],
+    })
+  );
+  assert.equal(health.lookThrough.coveragePct, 0);
+  assert.equal(health.lookThrough.unknownValue, 5_000_000);
+  assert.equal(health.metrics.find((m) => m.id === "fx-lookthrough"), undefined);
+  assert.equal(health.lookThrough.needsInput[0].name, "WealthNavi");
+});
+
+test("中身を登録すると実質の外貨・株式が出る", () => {
+  const health = analyzeAssetHealth(
+    base({
+      totalAssets: 10_000_000,
+      holdings: [
+        h({ source: "mf-auto", name: "みずほ銀行", category: "預金・現金", marketValue: 5_000_000 }),
+        h({ source: "mf-auto", name: "WealthNavi", category: "投資信託", marketValue: 5_000_000 }),
+      ],
+      composition: { WealthNavi: { foreignPct: 80, equityPct: 70 } },
+    })
+  );
+  assert.equal(health.lookThrough.coveragePct, 100);
+  assert.equal(health.lookThrough.foreignValue, 4_000_000);
+  assert.equal(health.lookThrough.equityValue, 3_500_000);
+  const m = health.metrics.find((mm) => mm.id === "fx-lookthrough");
+  assert.equal(m?.value, "40.0%");
+});
+
+test("個別株は中身の登録を求めない", () => {
+  const health = analyzeAssetHealth(
+    base({
+      totalAssets: 2_000_000,
+      holdings: [
+        h({ source: "sbi-auto", name: "日本航空", category: "国内株式", currency: "JPY", marketValue: 1_000_000 }),
+        h({ source: "sbi-foreign", name: "コカ-コーラ", category: "米国株", currency: "USD", marketValue: 10_000 }),
+      ],
+      fxRates: { USD: 100 },
+    })
+  );
+  // どちらも自動で判定できるので入力は不要
+  assert.equal(health.lookThrough.needsInput.length, 0);
+  assert.equal(health.lookThrough.coveragePct, 100);
+  // 株式は両方、外貨は米国株だけ
+  assert.equal(health.lookThrough.equityValue, 2_000_000);
+  assert.equal(health.lookThrough.foreignValue, 1_000_000);
+});

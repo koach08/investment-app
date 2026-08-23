@@ -54,6 +54,8 @@ export interface HealthInput {
   monthlyExpense: number;
   /** 為替レート。外貨建ての評価額を円に直すのに使う */
   fxRates?: FxRates;
+  /** 商品ごとの中身。投信やラップの実質的な外貨比率・株式比率を出すのに使う */
+  composition?: Record<string, Composition>;
   /** 生活防衛資金の目標月数。既定 6ヶ月 */
   targetCashMonths?: number;
 }
@@ -109,8 +111,31 @@ export interface Position {
   name: string;
   value: number;
   bucket: keyof AssetBuckets;
+  /** 建値の通貨。中身の通貨ではない */
+  currency: string;
   /** 明細が取れておらず、口座残高から逆算した枠かどうか */
   estimated: boolean;
+}
+
+/** 商品の中身。投信やラップは名前からは中身が分からないので本人に登録してもらう */
+export interface Composition {
+  /** 中身のうち外貨建ての割合（%） */
+  foreignPct: number;
+  /** 中身のうち株式の割合（%） */
+  equityPct: number;
+}
+
+export interface LookThrough {
+  /** 中身を反映した外貨建ての額 */
+  foreignValue: number;
+  /** 中身を反映した株式の額 */
+  equityValue: number;
+  /** 中身が分かっているポジションの割合（%） */
+  coveragePct: number;
+  /** 中身が分からないまま残っている額 */
+  unknownValue: number;
+  /** 中身の登録が要るポジション（金額の大きい順） */
+  needsInput: { name: string; value: number; pctOfTotal: number }[];
 }
 
 export interface AssetHealth {
@@ -131,6 +156,8 @@ export interface AssetHealth {
   unrealizedGainTotal: number;
   /** 実測の最大ドローダウン（資産推移データから） */
   maxDrawdown: { pct: number; amount: number; peakDate: string; troughDate: string } | null;
+  /** 中身を反映した実質の内訳 */
+  lookThrough: LookThrough;
   /** 上位の集中ポジション（口座ではなく中身の単位） */
   topPositions: { name: string; value: number; pctOfTotal: number; estimated: boolean }[];
   /** 診断できなかった理由（データ不足など） */
@@ -199,10 +226,16 @@ export function buildBuckets(input: HealthInput): BucketResult {
   const accountRows = input.holdings.filter((h) => ACCOUNT_LEVEL_SOURCES.has(h.source ?? ""));
   const instrumentRows = input.holdings.filter((h) => !ACCOUNT_LEVEL_SOURCES.has(h.source ?? ""));
 
-  const addPosition = (name: string, value: number, bucket: keyof AssetBuckets, estimated = false) => {
+  const addPosition = (
+    name: string,
+    value: number,
+    bucket: keyof AssetBuckets,
+    estimated = false,
+    currency = "JPY"
+  ) => {
     if (value <= 0) return;
     if (bucket === "cash" || bucket === "points" || bucket === "pension" || bucket === "insurance") return;
-    positions.push({ key: `${name}-${value}`, name, value, bucket, estimated });
+    positions.push({ key: `${name}-${value}`, name, value, bucket, currency, estimated });
   };
 
   if (accountRows.length > 0) {
@@ -215,7 +248,7 @@ export function buildBuckets(input: HealthInput): BucketResult {
       if (isBrokerageAccount(h.name, h.category)) continue;
       const b = classifyBucket(h.name, h.category);
       buckets[b] += h.marketValue;
-      addPosition(h.name, h.marketValue, b);
+      addPosition(h.name, h.marketValue, b, false, h.currency);
     }
 
     if (instrumentTotal > brokerageTotal * 1.02 && brokerageTotal > 0) {
@@ -229,7 +262,7 @@ export function buildBuckets(input: HealthInput): BucketResult {
       for (const h of instrumentRows) {
         const b = classifyBucket(h.name, h.category);
         buckets[b] += h.marketValue;
-        addPosition(h.name, h.marketValue, b);
+        addPosition(h.name, h.marketValue, b, false, h.currency);
       }
       const remainder = brokerageTotal - instrumentTotal;
       if (remainder > 0) {
@@ -246,7 +279,7 @@ export function buildBuckets(input: HealthInput): BucketResult {
     for (const h of instrumentRows) {
       const b = classifyBucket(h.name, h.category);
       buckets[b] += h.marketValue;
-      addPosition(h.name, h.marketValue, b);
+      addPosition(h.name, h.marketValue, b, false, h.currency);
     }
     notes.push("マネーフォワードの口座同期が無いため、証券口座と手動入力だけで判定しています。銀行預金が入っていないと現金比率が実態より低く出ます。");
   }
@@ -254,7 +287,7 @@ export function buildBuckets(input: HealthInput): BucketResult {
   for (const m of input.manualAssets) {
     const b = classifyBucket(m.name, m.category);
     buckets[b] += m.amount;
-    addPosition(m.name, m.amount, b);
+    addPosition(m.name, m.amount, b, false, m.currency);
   }
 
   positions.sort((a, b) => b.value - a.value);
@@ -480,6 +513,58 @@ export function analyzeAssetHealth(rawInput: HealthInput): AssetHealth {
     horizons: ["mid", "long"],
   });
 
+  // 中身を反映した実質の外貨・株式比率
+  const compo = input.composition ?? {};
+  let ltForeign = 0;
+  let ltEquity = 0;
+  let knownValue = 0;
+  const needsInput: LookThrough["needsInput"] = [];
+  for (const p of positions) {
+    const entered = compo[p.name];
+    if (entered) {
+      knownValue += p.value;
+      ltForeign += (p.value * entered.foreignPct) / 100;
+      ltEquity += (p.value * entered.equityPct) / 100;
+      continue;
+    }
+    // 個別株は中身を聞かなくても分かる。建値が円なら国内株、外貨なら外国株
+    if (p.bucket === "stocks") {
+      knownValue += p.value;
+      ltEquity += p.value;
+      if (p.currency.toUpperCase() !== "JPY") ltForeign += p.value;
+      continue;
+    }
+    needsInput.push({ name: p.name, value: p.value, pctOfTotal: pctOf(p.value) });
+  }
+  needsInput.sort((a, b) => b.value - a.value);
+  const unknownValue = needsInput.reduce((s, n) => s + n.value, 0);
+  const positionTotal = knownValue + unknownValue;
+  const lookThrough: LookThrough = {
+    foreignValue: ltForeign,
+    equityValue: ltEquity,
+    coveragePct: positionTotal > 0 ? (knownValue / positionTotal) * 100 : 0,
+    unknownValue,
+    needsInput: needsInput.slice(0, 8),
+  };
+
+  if (lookThrough.coveragePct >= 50) {
+    const ltForeignPct = totalAssets > 0 ? (ltForeign / totalAssets) * 100 : 0;
+    const ltEquityPct = totalAssets > 0 ? (ltEquity / totalAssets) * 100 : 0;
+    metrics.push({
+      id: "fx-lookthrough",
+      label: "外貨エクスポージャー（中身を反映）",
+      value: PCT(ltForeignPct),
+      detail:
+        `実質の外貨建て ${YEN(ltForeign)}（円が10%高くなると ${YEN(ltForeign * 0.1)} 目減り） / ` +
+        `実質の株式は ${YEN(ltEquity)}（${PCT(ltEquityPct)}） / 中身が判明しているのは値動き資産の ${PCT(lookThrough.coveragePct)}` +
+        (unknownValue > 0 ? ` / 未登録 ${YEN(unknownValue)}` : ""),
+      status: ltForeignPct > 60 ? "warn" : ltForeignPct < 10 ? "warn" : "good",
+      criterion: "60%超は為替に賭けすぎ、10%未満は円に賭けすぎ",
+      meaning: "投信やラップの中身まで見た、実際に為替の影響を受ける額。円で暮らす以上、ここが本当の為替リスク。",
+      horizons: ["mid", "long"],
+    });
+  }
+
   const leverage = netAssets > 0 ? (totalLiabilities / netAssets) * 100 : 0;
   metrics.push({
     id: "liabilities",
@@ -606,6 +691,7 @@ export function analyzeAssetHealth(rawInput: HealthInput): AssetHealth {
     unrealizedLossTotal,
     unrealizedGainTotal,
     maxDrawdown,
+    lookThrough,
     topPositions,
     gaps,
     verdict,
@@ -619,7 +705,12 @@ export function healthToBriefing(h: AssetHealth, monthlyExpense: number): string
   lines.push(`- 総資産: ${YEN(h.totalAssets)} / 負債: ${YEN(h.totalLiabilities)} / 純資産: ${YEN(h.netAssets)}`);
   lines.push(`- 内訳: 現金 ${YEN(h.buckets.cash)}(${PCT(h.cashPct)}) / 投信 ${YEN(h.buckets.funds)} / 株式 ${YEN(h.buckets.stocks)} / 暗号資産 ${YEN(h.buckets.crypto)} / 貴金属 ${YEN(h.buckets.commodities)} / 年金 ${YEN(h.buckets.pension)} / 保険 ${YEN(h.buckets.insurance)} / ポイント ${YEN(h.buckets.points)} / 証券口座の内訳未取得 ${YEN(h.buckets.unclassified)} / その他 ${YEN(h.buckets.other)}`);
   lines.push(`- 値動きする資産の合計: ${YEN(h.riskAssets)}（総資産の ${PCT(h.riskAssetPct)}）`);
-  lines.push(`- 外貨エクスポージャー: ${PCT(h.foreignPct)}`);
+  lines.push(`- 外貨エクスポージャー（直接保有分）: ${PCT(h.foreignPct)}`);
+  if (h.lookThrough.coveragePct >= 50) {
+    lines.push(`- 外貨エクスポージャー（中身を反映）: ${YEN(h.lookThrough.foreignValue)} / 実質の株式 ${YEN(h.lookThrough.equityValue)}（中身が判明しているのは ${PCT(h.lookThrough.coveragePct)}）`);
+  } else if (h.lookThrough.unknownValue > 0) {
+    lines.push(`- 中身が分からない商品が ${YEN(h.lookThrough.unknownValue)} あり、実質の外貨比率・株式比率は出せていません。中身の登録が要るのは: ${h.lookThrough.needsInput.slice(0, 4).map((n) => `${n.name}(${YEN(n.value)})`).join(", ")}`);
+  }
   if (monthlyExpense > 0) lines.push(`- 月の生活費: ${YEN(monthlyExpense)}`);
 
   lines.push(`\n## 守りの診断結果`);

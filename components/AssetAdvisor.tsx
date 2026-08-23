@@ -15,6 +15,7 @@ import {
   type TimelinePointLike,
   type Status,
   type Horizon,
+  type Composition,
 } from "@/lib/asset-health";
 
 interface Props {
@@ -40,6 +41,7 @@ interface ChatMsg {
 
 const SETTINGS_KEY = "investment-app-asset-settings";
 const CHAT_KEY = "investment-app-advisor-chat";
+const COMPOSITION_KEY = "investment-app-position-composition";
 /** 保存する会話の上限。これを超えたら古いものから捨てる */
 const CHAT_LIMIT = 40;
 
@@ -141,6 +143,7 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showQuotaInputs, setShowQuotaInputs] = useState(false);
   const [chatLoaded, setChatLoaded] = useState(false);
+  const [composition, setComposition] = useState<Record<string, Composition>>({});
   const monthlyExpense = settings.monthlyExpense;
   const targetMonths = settings.targetMonths;
 
@@ -188,6 +191,43 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
     };
     load();
   }, []);
+
+  // 商品の中身の読み込み
+  useEffect(() => {
+    const load = async () => {
+      let c: Record<string, Composition> | null = null;
+      try {
+        const res = await fetch("/api/save-data?key=position-composition");
+        const json = await res.json();
+        if (json?.data && typeof json.data === "object") c = json.data;
+      } catch { /* ignore */ }
+      if (!c) {
+        try {
+          const local = localStorage.getItem(COMPOSITION_KEY);
+          if (local) c = JSON.parse(local);
+        } catch { /* ignore */ }
+      }
+      if (c) setComposition(c);
+    };
+    load();
+  }, []);
+
+  const persistComposition = (next: Record<string, Composition>) => {
+    setComposition(next);
+    try { localStorage.setItem(COMPOSITION_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    fetch("/api/save-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "position-composition", data: next }),
+    }).catch(() => { /* ignore */ });
+  };
+
+  const setCompositionField = (name: string, key: keyof Composition, raw: string) => {
+    const v = parseFloat(raw);
+    const clamped = Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+    const current = composition[name] ?? { foreignPct: 0, equityPct: 0 };
+    persistComposition({ ...composition, [name]: { ...current, [key]: clamped } });
+  };
 
   // 会話の読み込み。相談窓口なので、閉じても続きから話せるようにする
   useEffect(() => {
@@ -245,9 +285,10 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
       monthlyExpense,
       targetCashMonths: targetMonths,
       fxRates: rate ? { USD: rate } : {},
+      composition,
     };
     return analyzeAssetHealth(payload);
-  }, [holdings, manualAssets, timeline, mfData, fallbackTotal, monthlyExpense, targetMonths, rate]);
+  }, [holdings, manualAssets, timeline, mfData, fallbackTotal, monthlyExpense, targetMonths, rate, composition]);
 
   const income = useMemo(
     () => analyzeIncome(dividends, { totalAssets: health.totalAssets, riskAssets: health.riskAssets }),
@@ -717,6 +758,87 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
                 <li key={i} className="text-[11px] text-zinc-600 leading-relaxed">・{n}</li>
               ))}
             </ul>
+          )}
+        </div>
+      )}
+
+      {/* ===== 商品の中身 ===== */}
+      {(health.lookThrough.needsInput.length > 0 || Object.keys(composition).length > 0) && (
+        <div className="border border-zinc-800 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-zinc-300 mb-1">商品の中身</h3>
+          <p className="text-xs text-zinc-600 mb-1">
+            投信やラップは名前からは中身が分かりません。目論見書や月次レポートの資産配分を見て、
+            外貨建ての割合と株式の割合を入れると、実質の為替リスクと株式比率が出ます。個別株は入力不要です。
+          </p>
+          <p className="text-xs text-zinc-600 mb-3">
+            中身が判明しているのは値動き資産の {health.lookThrough.coveragePct.toFixed(0)}%
+            {health.lookThrough.unknownValue > 0 && <>（未登録 {yen(health.lookThrough.unknownValue)}）</>}
+            {health.lookThrough.coveragePct < 50 && <span className="text-amber-500"> — 50%を超えると実質の比率を出します</span>}
+          </p>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[520px]">
+              <thead>
+                <tr className="text-xs text-zinc-500 border-b border-zinc-800">
+                  <th className="text-left py-1.5 font-normal">商品</th>
+                  <th className="text-right py-1.5 font-normal">評価額</th>
+                  <th className="text-right py-1.5 font-normal w-24">外貨 %</th>
+                  <th className="text-right py-1.5 font-normal w-24">株式 %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  ...health.lookThrough.needsInput,
+                  ...Object.keys(composition)
+                    .filter((n) => !health.lookThrough.needsInput.some((x) => x.name === n))
+                    .map((n) => {
+                      const pos = health.topPositions.find((p) => p.name === n);
+                      return { name: n, value: pos?.value ?? 0, pctOfTotal: pos?.pctOfTotal ?? 0 };
+                    }),
+                ].map((row) => {
+                  const c = composition[row.name];
+                  return (
+                    <tr key={row.name} className="border-b border-zinc-900 last:border-0">
+                      <td className="py-1.5 pr-3 text-zinc-300 truncate max-w-[240px]">
+                        {row.name}
+                        {row.pctOfTotal > 0 && (
+                          <span className="text-xs text-zinc-600 ml-2">{row.pctOfTotal.toFixed(1)}%</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 text-right font-mono text-zinc-500 whitespace-nowrap">{yen(row.value)}</td>
+                      <td className="py-1.5 text-right">
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          defaultValue={c ? c.foreignPct : ""}
+                          onBlur={(e) => setCompositionField(row.name, "foreignPct", e.target.value)}
+                          placeholder="—"
+                          className="w-20 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm text-right"
+                        />
+                      </td>
+                      <td className="py-1.5 text-right">
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          defaultValue={c ? c.equityPct : ""}
+                          onBlur={(e) => setCompositionField(row.name, "equityPct", e.target.value)}
+                          placeholder="—"
+                          className="w-20 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm text-right"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {health.lookThrough.coveragePct >= 50 && (
+            <div className="text-xs text-zinc-500 mt-3">
+              実質の外貨建て {yen(health.lookThrough.foreignValue)} / 実質の株式 {yen(health.lookThrough.equityValue)}
+            </div>
           )}
         </div>
       )}
