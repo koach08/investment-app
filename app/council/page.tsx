@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import {
   loadPositions,
-  openPositions,
   addPosition,
   closePosition,
   positionsBriefing,
@@ -238,6 +237,26 @@ export default function CouncilPage() {
             >
               ＋ この決定を建玉として台帳に記録
             </button>
+            <button
+              onClick={() => {
+                const v = result.verdict;
+                const txt = [
+                  `【委員会判定 ${v.ticker || ""} ${v.name || ""}】`,
+                  `判断: ${v.decisionLabel}`,
+                  v.entry ? `エントリー目安: ${v.entry}` : "",
+                  v.stop ? `損切り: ${v.stop}` : "",
+                  v.target ? `利確: ${v.target}` : "",
+                  v.size ? `サイズ: ${v.size}` : "",
+                  `根拠: ${v.thesis || v.rationale || ""}`,
+                  v.thesisBreaker ? `撤退条件: ${v.thesisBreaker}` : "",
+                ].filter(Boolean).join("\n");
+                navigator.clipboard.writeText(txt);
+                alert("発注メモをコピーしました。手動で注文してください。");
+              }}
+              className="text-xs px-3 py-1.5 rounded-md border border-indigo-700 text-indigo-300 hover:bg-indigo-950/50"
+            >
+              📋 指値メモをコピー（半自動用）
+            </button>
             <span className="text-xs text-zinc-500 self-center">
               記録済の決定: 結果が出たら下の建玉を手仕舞いすると勝率に反映されます
             </span>
@@ -259,9 +278,14 @@ export default function CouncilPage() {
 
       {/* オープン建玉 */}
       <section className="space-y-2">
-        <h2 className="font-bold text-sm text-zinc-300">
-          📒 オープン建玉（方向と建玉理由をAIが常に参照します）
-        </h2>
+        <div>
+          <h2 className="font-bold text-sm text-zinc-300">
+            📒 オープン建玉（方向と建玉理由をAIが常に参照します）
+          </h2>
+          <div className="text-[10px] text-zinc-500 mt-0.5">
+            信用売り = ショート（株価下落で利益）。信用買い = レバレッジロング。現物 = 自分の資金で保有。信用取引は金利・逆日歩リスクあり。
+          </div>
+        </div>
         {open.length === 0 ? (
           <p className="text-sm text-zinc-500">オープン中の建玉はありません。</p>
         ) : (
@@ -275,13 +299,15 @@ export default function CouncilPage() {
                   <div className="font-semibold">
                     {p.ticker} {p.name}{" "}
                     <span
-                      className={`ml-1 text-xs px-1.5 py-0.5 rounded ${
+                      className={`ml-1 text-xs px-1.5 py-0.5 rounded font-medium ${
                         p.direction === "信用売り"
-                          ? "bg-rose-900/50 text-rose-300"
-                          : "bg-emerald-900/50 text-emerald-300"
+                          ? "bg-rose-900/60 text-rose-300 border border-rose-800"
+                          : p.direction === "信用買い"
+                          ? "bg-emerald-900/60 text-emerald-300 border border-emerald-800"
+                          : "bg-blue-900/60 text-blue-300 border border-blue-800"
                       }`}
                     >
-                      {p.direction}
+                      {p.direction === "信用売り" ? "信用売り (ショート)" : p.direction === "信用買い" ? "信用買い (レバロング)" : "現物"}
                     </span>
                   </div>
                   <div className="text-xs text-zinc-400">

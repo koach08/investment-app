@@ -136,3 +136,31 @@ The app uses a three-tier model strategy based on task importance:
 ## License
 
 MIT
+
+## 実際に利益を出すための使い方 (2026 revival版)
+
+1. **毎日ルーチン**
+   - Morning Brief 生成 → 今日の地合いとリスクを把握
+   - Council で「保有中の建玉どうする？」「今日の信用は？」を聞く
+   - Margin Strategy でその日向けのIFDOCO提案をもらう
+
+2. **半自動運用（推奨）**
+   - AIが出した entry / SL / TP / サイズを **コピーボタンで取得**
+   - SBIやbitFlyerで**自分で指値入力**して発注
+   - 建玉をアプリの台帳に記録 → 後で手仕舞い時に勝率が自動集計される
+
+3. **コンスタント + テンバーガー狙い**
+   - 短期（信用）は勝率重視で「確信度60%以上 + Risk低 + 材料あり」のみ
+   - 中長期は Council の「長期」提案や Advisor の long-term セクションから
+   - 低確信度は絶対にやらない（これが一番大事）
+
+4. **Crypto復活**
+   - /crypto ページを開く → 現在のポジションとリスクが見える
+   - 「半自動判断支援」ボタンでペアごとにAI提案をもらう
+   - 提案をコピーして手動発注、またはトレーダー側で1サイクル手動実行
+
+5. **Vercelで動かすとき**
+   - すべての *_API_KEY を Vercel の Environment Variables に設定
+   - CRYPTO_TRADER_URL を本番URLに（すでにデフォルトで入ってる）
+
+これで「自動で全部任せる」のではなく「AIが優秀な秘書として提案 → あなたが最終判断」になる。

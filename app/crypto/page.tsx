@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { clsx } from "clsx";
+import type { WalletBalance } from "@/lib/onchain/wallet";
 
 // === Types (mirrored from crypto-trader) ===
 type CryptoAction = "BUY" | "SELL" | "HOLD";
@@ -93,11 +94,19 @@ interface StatusData {
   cumulativePnL?: CumulativePnL;
   recentDecisions: AIDecision[];
   recentTrades: TradeRecord[];
+  jpyBalance?: { free: number; used: number; total: number };
 }
 
 interface ProxyError {
   error: string;
   message?: string;
+}
+
+interface CryptoProposal {
+  id: number;
+  pair: string;
+  timestamp: string;
+  text: string;
 }
 
 function fmt(n: number | undefined, digits = 0): string {
@@ -167,6 +176,15 @@ export default function CryptoPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
+  // Semi-auto proposals (human final decision)
+  const [proposals, setProposals] = useState<CryptoProposal[]>([]);
+  const [proposalBusy, setProposalBusy] = useState<string | null>(null);
+
+  // On-chain wallet (read-only, for reference)
+  const [wallet, setWallet] = useState<WalletBalance | { error: string } | null>(null);
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletAddress, setWalletAddress] = useState("");
+
   const fetchData = useCallback(async () => {
     try {
       const res = await fetch("/api/crypto/bot/status");
@@ -191,15 +209,81 @@ export default function CryptoPage() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  const sendAction = async (action: "start" | "stop" | "cycle") => {
+  const sendAction = async (action: "start" | "stop" | "cycle", paperMode?: boolean) => {
     setActionBusy(true);
     try {
-      await fetch(`/api/crypto/bot/${action}`, { method: "POST" });
+      const body = action === "start" && paperMode !== undefined ? { paperMode } : undefined;
+      await fetch(`/api/crypto/bot/${action}`, {
+        method: "POST",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
       await fetchData();
     } catch (e) {
       console.error(e);
     } finally {
       setActionBusy(false);
+    }
+  };
+
+  // Semi-auto: AI gives clear proposal, human places the order manually
+  const requestProposal = async (pair: string) => {
+    setProposalBusy(pair);
+    try {
+      const res = await fetch("/api/ai-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            { role: "user", content: `現在の市場状況を踏まえ、${pair} のスイングまたはデイトレード向けの半自動用提案を1つだけ出してください。必ず以下の形式で:\nエントリー指値: XXX\n損切り: XXX\n利確: XXX\nサイズ目安: 資金のX%\n根拠: 1-2文\n撤退条件: ...\n確信度: XX%` }
+          ],
+          context: { focus: "crypto", pair, currentPositions: data?.positions || [], mode: "semi-auto human decision" }
+        })
+      });
+      const json = await res.json();
+      const proposal = {
+        id: Date.now(),
+        pair,
+        timestamp: new Date().toISOString(),
+        text: json.reply || json.content || "提案生成に失敗",
+      };
+      setProposals((p) => [proposal, ...p].slice(0, 5));
+    } catch {
+      setProposals((p) => [
+        {
+          id: Date.now(),
+          pair,
+          text: "AI提案取得エラー。手動で判断してください。",
+          timestamp: new Date().toISOString(),
+        },
+        ...p,
+      ].slice(0, 5));
+    } finally {
+      setProposalBusy(null);
+    }
+  };
+
+  const copyOrder = (text: string) => {
+    navigator.clipboard.writeText(text);
+    alert("コピーしました。bitFlyerで手動発注してください。");
+  };
+
+  const fetchWallet = async (addr?: string) => {
+    const target = addr || walletAddress;
+    if (!target) return;
+    setWalletLoading(true);
+    try {
+      const res = await fetch(`/api/onchain/wallet?address=${encodeURIComponent(target)}`);
+      const json = await res.json();
+      if (json.error) {
+        setWallet({ error: json.error });
+      } else {
+        setWallet(json);
+      }
+    } catch (e) {
+      setWallet({ error: e instanceof Error ? e.message : "wallet fetch failed" });
+    } finally {
+      setWalletLoading(false);
     }
   };
 
@@ -224,12 +308,9 @@ export default function CryptoPage() {
             <div>
               crypto-trader を起動してください:
             </div>
-            <code className="block bg-zinc-900 p-2 rounded text-green-400 font-mono">
-              cd ~/Desktop/アプリ開発プロジェクト/crypto-trader && npm run dev
-            </code>
-            <div>
-              デフォルトで <span className="text-zinc-300">http://localhost:3004</span> を参照します。
-              別ポートの場合は <code className="text-zinc-300">CRYPTO_TRADER_URL</code> 環境変数で指定可能。
+            <div className="text-xs text-zinc-500 mt-2">
+              現在は公開デプロイ版 (<span className="text-emerald-400">Railway</span>) をデフォルト参照しています。<br />
+              ローカルで動かしている場合は <code className="text-zinc-300">CRYPTO_TRADER_URL</code> で上書きしてください。
             </div>
           </div>
           <button
@@ -243,7 +324,7 @@ export default function CryptoPage() {
     );
   }
 
-  const { status, positions, dailyPnL: pnl, cumulativePnL: cum, recentDecisions, recentTrades } = data!;
+  const { status, positions, dailyPnL: pnl, cumulativePnL: cum, recentDecisions, recentTrades, jpyBalance } = data!;
   const totalUnrealized = positions.reduce((sum, p) => sum + p.unrealizedPnL, 0);
   const totalPositionValue = positions.reduce((sum, p) => sum + p.valueJPY, 0);
   const risk = buildCryptoRiskPanel(positions, pnl, cum, status, recentDecisions);
@@ -257,9 +338,14 @@ export default function CryptoPage() {
           <div className="text-xs text-zinc-500 mt-1">
             crypto-trader連携 ・ サイクル{status.cycleCount}回
             {status.lastCycleTimestamp && ` ・ 最終: ${timeAgo(status.lastCycleTimestamp)}`}
-            {cum?.firstTradeDate && ` ・ 運用開始: ${new Date(cum.firstTradeDate).toLocaleDateString("ja-JP")}`}
           </div>
+          {jpyBalance && (
+            <div className="text-[10px] mt-0.5 text-amber-400">
+              現在 free JPY: ¥{fmt(jpyBalance.free)} / total ¥{fmt(jpyBalance.total)}（used ¥{fmt(jpyBalance.used)}）
+            </div>
+          )}
         </div>
+
         <div className="flex items-center gap-2">
           <span
             className={clsx(
@@ -277,9 +363,13 @@ export default function CryptoPage() {
             />
             {status.running ? "稼働中" : "停止"}
           </span>
-          {status.paperMode && (
+          {!status.paperMode ? (
+            <span className="px-2 py-0.5 rounded text-xs bg-red-900/70 text-red-300 font-bold border border-red-500">
+              🔴 LIVE (実取引)
+            </span>
+          ) : (
             <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400 font-medium">
-              ペーパーモード
+              📝 PAPER
             </span>
           )}
           {status.circuitBreakerState === "TRIGGERED" && (
@@ -292,20 +382,28 @@ export default function CryptoPage() {
 
       {/* Controls */}
       <div className="flex gap-2">
-        <button
-          onClick={() => sendAction("start")}
-          disabled={actionBusy || status.running}
-          className="px-3 py-1.5 text-xs bg-green-900/50 text-green-400 hover:bg-green-900/70 rounded disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          起動
-        </button>
-        <button
-          onClick={() => sendAction("stop")}
-          disabled={actionBusy || !status.running}
-          className="px-3 py-1.5 text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          停止
-        </button>
+         <button
+           onClick={() => sendAction("start", true)}
+           disabled={actionBusy || status.running}
+           className="px-3 py-1.5 text-xs bg-emerald-900/60 text-emerald-300 hover:bg-emerald-900/80 rounded disabled:opacity-30"
+         >
+           Paper起動
+         </button>
+         <button
+           onClick={() => sendAction("start", false)}
+           disabled={actionBusy || status.running}
+           className="px-3 py-1.5 text-xs bg-red-800/70 text-red-300 hover:bg-red-800 border border-red-500/60 rounded disabled:opacity-30"
+           title="実弾LIVE"
+         >
+           🔴 LIVE起動
+         </button>
+         <button
+           onClick={() => sendAction("stop")}
+           disabled={actionBusy || !status.running}
+           className="px-3 py-1.5 text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+         >
+           停止
+         </button>
         <button
           onClick={() => sendAction("cycle")}
           disabled={actionBusy}
@@ -314,6 +412,106 @@ export default function CryptoPage() {
           手動サイクル実行
         </button>
       </div>
+
+      {/* Full Auto for Crypto */}
+      <section className="border border-red-800/60 bg-red-950/10 rounded-xl p-4 mb-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-red-400 font-bold">🔴 フルオート運用（crypto専用）</span>
+          <span className="text-[10px] px-1.5 py-0.5 bg-red-900/50 text-red-300 rounded">実弾注意</span>
+        </div>
+        <div className="text-xs text-zinc-400 mb-2">
+          ボットがAI判断 → 自動発注を繰り返します。サーキットブレーカー・リスク管理はtrader側で動作中。
+          投資アプリ側では監視・手動介入のみ推奨。
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => sendAction("start", true)}
+            disabled={actionBusy || status.running}
+            className="px-3 py-1 text-xs bg-emerald-700 hover:bg-emerald-600 text-white rounded disabled:opacity-40"
+          >
+            📝 Paperでフルオート開始
+          </button>
+          <button
+            onClick={() => sendAction("start", false)}
+            disabled={actionBusy || status.running}
+            className="px-3 py-1 text-xs bg-red-700 hover:bg-red-600 text-white rounded disabled:opacity-40 border border-red-500"
+            title="実取引モード"
+          >
+            🔴 LIVEフルオート開始 (実弾)
+          </button>
+          <button
+            onClick={() => sendAction("stop")}
+            disabled={actionBusy || !status.running}
+            className="px-3 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 rounded disabled:opacity-40"
+          >
+            停止
+          </button>
+          <button
+            onClick={() => sendAction("cycle")}
+            disabled={actionBusy}
+            className="px-3 py-1 text-xs bg-orange-800/70 text-orange-200 hover:bg-orange-800 rounded"
+          >
+            1サイクル強制
+          </button>
+        </div>
+        {status.running && (
+          <div className="mt-2 text-[10px] text-red-300">現在フルオート実行中。ポジションは自動で管理されます。</div>
+        )}
+      </section>
+
+      {/* Semi-auto proposals for human decision (stock寄り or 手動確認したい時用) */}
+      <section className="border border-amber-800/50 bg-amber-950/10 rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold text-amber-400">半自動判断支援（人間が最終判断）</div>
+            <div className="text-[11px] text-zinc-500">AIが指値・SL/TP・サイズを提案 → あなたがbitFlyerで手動発注 → 結果を後で記録</div>
+          </div>
+          <button
+            onClick={() => setProposals([])}
+            className="text-xs px-2 py-1 rounded border border-zinc-700 hover:bg-zinc-900"
+          >
+            提案クリア
+          </button>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {(data?.status.activePairs || ["BTC/JPY","ETH/JPY","XRP/JPY"]).map((pair) => (
+            <button
+              key={pair}
+              onClick={() => requestProposal(pair)}
+              disabled={!!proposalBusy}
+              className="px-3 py-1 text-xs rounded bg-amber-900/60 hover:bg-amber-900 text-amber-300 disabled:opacity-50"
+            >
+              {proposalBusy === pair ? "分析中..." : `${pair} を分析して提案`}
+            </button>
+          ))}
+          <button
+            onClick={() => sendAction("cycle")}
+            disabled={actionBusy}
+            className="px-3 py-1 text-xs rounded bg-blue-900/50 text-blue-300 hover:bg-blue-900/70"
+          >
+            トレーダー側で1サイクル手動実行
+          </button>
+        </div>
+
+        {proposals.length > 0 && (
+          <div className="space-y-2 pt-2">
+            {proposals.map((pr) => (
+              <div key={pr.id} className="bg-zinc-950 border border-amber-900/40 rounded-lg p-3 text-sm">
+                <div className="flex justify-between items-start mb-1">
+                  <span className="font-bold text-amber-300">{pr.pair}</span>
+                  <span className="text-[10px] text-zinc-500">{timeAgo(pr.timestamp)}</span>
+                </div>
+                <pre className="whitespace-pre-wrap text-xs text-zinc-300 font-mono leading-snug">{pr.text}</pre>
+                <div className="mt-2 flex gap-2">
+                  <button onClick={() => copyOrder(pr.text)} className="text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">提案全文をコピー（発注用）</button>
+                  <button onClick={() => setProposals(ps => ps.filter(p => p.id !== pr.id))} className="text-[11px] px-2 py-0.5 text-zinc-400 hover:text-white">削除</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       <div
         className={clsx(
@@ -497,6 +695,44 @@ export default function CryptoPage() {
         )}
       </section>
 
+      {/* On-chain Wallet (read-only reference) */}
+      <section>
+        <h2 className="text-sm font-medium text-zinc-400 mb-2">On-chain ウォレット残高</h2>
+        <div className="flex gap-2 mb-2">
+          <input
+            type="text"
+            placeholder="0x... (ETH wallet)"
+            value={walletAddress}
+            onChange={(e) => setWalletAddress(e.target.value)}
+            className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs font-mono"
+          />
+          <button
+            onClick={() => fetchWallet()}
+            disabled={walletLoading || !walletAddress}
+            className="px-3 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 rounded disabled:opacity-50"
+          >
+            {walletLoading ? "取得中..." : "取得"}
+          </button>
+        </div>
+         {wallet && !('error' in wallet) && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs">
+            <div className="font-mono text-[10px] text-zinc-500 mb-1 truncate">{wallet.address}</div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <div>ETH: {wallet.eth?.amount?.toFixed(4) || 0} (¥{fmt(wallet.eth?.jpyValue)})</div>
+              <div className="font-bold">合計: ¥{fmt(wallet.totalJPY)}</div>
+               {wallet.tokens?.map((t: {symbol?: string; amount?: number; jpyValue?: number}, i: number) => (
+                <div key={i}>{t.symbol}: {t.amount?.toFixed(4)} (¥{fmt(t.jpyValue)})</div>
+              ))}
+            </div>
+            <div className="text-[10px] text-zinc-600 mt-1">fetched: {wallet.fetchedAt ? new Date(wallet.fetchedAt).toLocaleTimeString() : ""}</div>
+          </div>
+        )}
+         {'error' in (wallet || {}) && (
+           <div className="text-red-400 text-xs">{(wallet as any).error}</div>
+         )}
+        <div className="text-[10px] text-zinc-600 mt-1">※ 公開情報のみ（秘密鍵不要）。METAMASK_WALLET_ADDRESS でも設定可。</div>
+      </section>
+
       {/* Recent AI Decisions */}
       <section>
         <h2 className="text-sm font-medium text-zinc-400 mb-2">AI判断履歴（直近10件）</h2>
@@ -568,18 +804,18 @@ export default function CryptoPage() {
                     {t.side.toUpperCase()}
                   </span>
                   <span className="font-medium">{t.pair}</span>
-                  <span className="text-zinc-500">
-                    ¥{fmt(t.valueJPY)}
-                  </span>
-                  {t.pnl !== undefined && (
-                    <span
-                      className={clsx(
-                        t.pnl >= 0 ? "text-green-400" : "text-red-400"
-                      )}
-                    >
-                      {t.pnl >= 0 ? "+" : ""}¥{fmt(t.pnl)}
-                    </span>
-                  )}
+                   <span className="text-zinc-500">
+                     ¥{fmt(t.valueJPY)} <span className="text-[10px] text-zinc-600">({t.amount?.toFixed(5) || "?"})</span>
+                   </span>
+                   {t.pnl !== undefined && (
+                     <span
+                       className={clsx(
+                         t.pnl >= 0 ? "text-green-400" : "text-red-400"
+                       )}
+                     >
+                       {t.pnl >= 0 ? "+" : ""}¥{fmt(t.pnl)}
+                     </span>
+                   )}
                 </div>
                 <span className="text-zinc-500">{timeAgo(t.timestamp)}</span>
               </div>
@@ -589,7 +825,7 @@ export default function CryptoPage() {
       )}
 
       <div className="text-center text-xs text-zinc-600 pt-4">
-        crypto-trader (http://localhost:3004) と連携中 ・ 10秒ごとに自動更新
+        crypto-trader 連携中（プロキシ経由） ・ 10秒ごとに自動更新
       </div>
     </div>
   );

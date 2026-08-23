@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const CRYPTO_TRADER_BASE = process.env.CRYPTO_TRADER_URL || "http://localhost:3004";
+const CRYPTO_TRADER_BASE = process.env.CRYPTO_TRADER_URL || "https://imaginative-transformation-production-8b85.up.railway.app";
 
 async function proxy(req: NextRequest, path: string[]) {
   const url = new URL(req.url);
@@ -9,8 +9,8 @@ async function proxy(req: NextRequest, path: string[]) {
   try {
     const init: RequestInit = {
       method: req.method,
-      headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(20000),
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      signal: AbortSignal.timeout(25000),
     };
 
     if (req.method !== "GET" && req.method !== "HEAD") {

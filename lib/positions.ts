@@ -16,7 +16,11 @@ export interface Position {
   id: string;
   ticker: string;
   name?: string;
-  /** 現物=ロング, 信用買い=ロング(レバ), 信用売り=ショート */
+  /** 
+   * 現物: 自分の現金で買った株（長期向き）
+   * 信用買い: 証券会社からお金を借りて買う（レバレッジロング、短期〜中期）
+   * 信用売り: 株を借りて売るショート（株価下落で利益、逆日歩リスクあり）
+   */
   direction: PositionDirection;
   openedAt: string; // ISO
   entryPrice: number;

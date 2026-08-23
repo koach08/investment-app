@@ -264,12 +264,12 @@ function MarginTradeCard({ trade }: { trade: MarginTrade }) {
         <div className="flex items-center gap-2">
           <TickerLink ticker={trade.ticker} className="font-mono text-blue-400 font-bold hover:underline" />
           <span className="text-sm text-zinc-300">{trade.name}</span>
-          <span className={clsx(
-            "px-2 py-0.5 rounded text-xs font-bold",
-            isShort ? "bg-red-500/20 text-red-400" : "bg-green-500/20 text-green-400"
-          )}>
-            {trade.direction}
-          </span>
+           <span className={clsx(
+             "px-2 py-0.5 rounded text-xs font-bold",
+             isShort ? "bg-red-500/20 text-red-400 border border-red-800" : "bg-green-500/20 text-green-400 border border-green-800"
+           )}>
+             {trade.direction === "空売り" ? "信用売り (ショート)" : "信用買い (レバ)"}
+           </span>
           <span className={clsx(
             "px-1.5 py-0.5 rounded text-xs",
             trade.conviction === "HIGH" ? "bg-green-800/30 text-green-400" :
@@ -413,6 +413,26 @@ function MarginTradeCard({ trade }: { trade: MarginTrade }) {
           style={{ width: `${trade.probabilityOfProfit}%` }}
         />
       </div>
+
+      {/* Semi-auto: one-click copy for human execution on SBI */}
+      <button
+        onClick={() => {
+          const txt = [
+            `【${trade.ticker} ${trade.name} ${trade.direction}】`,
+            `IFDOCO: 発注 ${trade.ifdoco?.entryOrder.type} @${trade.ifdoco?.entryOrder.price}`,
+            `利確 OCO @${trade.ifdoco?.takeProfit.price}`,
+            `損切 OCO @${trade.ifdoco?.stopLoss.price}`,
+            `サイズ: ${trade.positionSize} / 期間: ${trade.holdingPeriod}`,
+            `根拠: ${trade.thesis}`,
+            `撤退: ${trade.thesisBreaker}`,
+          ].join('\n');
+          navigator.clipboard.writeText(txt);
+          alert('SBI発注用テキストをコピーしました。手動でIFDOCO入力してください。');
+        }}
+        className="mt-3 w-full text-xs py-1.5 rounded bg-yellow-700 hover:bg-yellow-600 text-yellow-100 font-medium"
+      >
+        📋 SBI IFDOCO発注用テキストをコピー（半自動）
+      </button>
     </div>
   );
 }
@@ -437,6 +457,34 @@ const RISK_GRADIENT_COLORS: Record<string, string> = {
   VERY_HIGH: "from-red-500 to-red-600",
 };
 
+// 「AIに相談する」で引き継いだ分析ごとの、そのまま送れる質問候補
+const SEED_QUESTIONS: Record<"strategy" | "morning" | "margin", string[]> = {
+  strategy: [
+    "この戦略のうち、今日まず実行すべき1つはどれ？理由も。",
+    "この戦略で一番リスクが高いのはどの推奨？テーゼが崩れる条件は？",
+    "私の保有銘柄と重複・相関しているものはある？",
+    "推奨されたエントリー価格と損切り価格の根拠を説明して。",
+  ],
+  morning: [
+    "このモーニングブリーフで今日一番効きそうな材料はどれ？",
+    "挙がっているトレードアイデアの優先順位をつけて。",
+    "私の保有銘柄に影響しそうな材料だけ抜き出して。",
+    "今日は様子見すべき？根拠つきで。",
+  ],
+  margin: [
+    "この信用戦略、資金効率とリスクのバランスはどう？",
+    "提示された空売り候補の踏み上げリスクを評価して。",
+    "IFDOCOの値幅設定は妥当？改善案があれば。",
+    "証拠金維持率が危なくなるシナリオを教えて。",
+  ],
+};
+
+const SEED_LABEL: Record<"strategy" | "morning" | "margin", string> = {
+  strategy: "📊 投資戦略タブの生成結果を引き継いでいます",
+  morning: "☀️ モーニングブリーフの内容を引き継いでいます",
+  margin: "⚡ 信用取引分析の内容を引き継いでいます",
+};
+
 export default function AdvisorPage() {
   const [activeTab, setActiveTab] = useState<"morning" | "strategy" | "margin" | "chat" | "news">("morning");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
@@ -447,6 +495,8 @@ export default function AdvisorPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  // どのタブの分析を引き継いでチャットに来たか（バナー表示と質問候補の出し分けに使う）
+  const [chatSeed, setChatSeed] = useState<"strategy" | "morning" | "margin" | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatInitialized = useRef(false);
@@ -546,6 +596,14 @@ export default function AdvisorPage() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // タブ切替時にページ最上部へ戻す
+  // これが無いと「戦略タブ最下部の"AIに相談する"を押す→タブは切り替わるが画面は最下部のまま
+  // →チャット欄が画面外で"何も起きていない"ように見える」という不具合になる
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [activeTab]);
+
   // Load chat history from localStorage on mount
   useEffect(() => {
     try {
@@ -608,7 +666,7 @@ export default function AdvisorPage() {
       const ctx = { indices: indicesArr, fredData: fredRes.data, news: newsRes.news };
 
       // Fetch market data for holdings and compute signals (batch of 4)
-      let enrichedHoldings: HoldingWithSignal[] = [];
+      const enrichedHoldings: HoldingWithSignal[] = [];
       if (holdings.length > 0) {
         const holdingsCopy = [...holdings];
         for (let i = 0; i < holdingsCopy.length; i += 4) {
@@ -772,6 +830,8 @@ export default function AdvisorPage() {
             ...marketContext,
             holdings,
             generatedStrategy: strategy,
+            morningBrief,
+            marginStrategy,
             positions: positionsBriefing(loadPositions()),
           },
         }),
@@ -1044,6 +1104,16 @@ export default function AdvisorPage() {
     setMarginLoading(false);
   };
 
+  // 「AIに相談する」= タブ切替だけだと何も起きていないように見えるので、
+  // どの分析から来たかを保持し、その分析を前提にした質問を入力欄に入れておく
+  const goToChat = (from: "strategy" | "morning" | "margin") => {
+    setChatSeed(from);
+    setActiveTab("chat");
+    if (!chatInput.trim()) {
+      setChatInput(SEED_QUESTIONS[from][0]);
+    }
+  };
+
   const quickQuestions = [
     "今の相場環境で配当利回りが高いおすすめ銘柄は？",
     "100万円で分散投資するならどう配分する？",
@@ -1286,7 +1356,7 @@ export default function AdvisorPage() {
                 <button onClick={() => setActiveTab("strategy")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
                   📊 詳細戦略を見る
                 </button>
-                <button onClick={() => setActiveTab("chat")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
+                <button onClick={() => goToChat("morning")} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium">
                   💬 AIに相談する
                 </button>
               </div>
@@ -1742,8 +1812,8 @@ export default function AdvisorPage() {
               {/* Quick jump */}
               <div className="flex justify-center pt-2">
                 <button
-                  onClick={() => setActiveTab("chat")}
-                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm"
+                  onClick={() => goToChat("strategy")}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium"
                 >
                   💬 この戦略についてAIに相談する
                 </button>
@@ -1774,6 +1844,9 @@ export default function AdvisorPage() {
       {/* ===== MARGIN TRADING TAB ===== */}
       {activeTab === "margin" && (
         <div>
+          <div className="mb-3 p-2 bg-red-950/20 border border-red-900/50 rounded text-[11px] text-red-300">
+            ⚠️ ここは<strong>信用取引専用</strong>です。信用買い＝レバロング / 空売り＝ショート。現物とは別。金利・逆日歩リスクあり。短期売買前提の提案です。
+          </div>
           <div className="flex justify-between items-center mb-6">
             <p className="text-sm text-zinc-500 max-w-md">
               大型株{MARGIN_CANDIDATES.length}銘柄をスキャンし、IFDOCO注文値を生成
@@ -1951,7 +2024,7 @@ export default function AdvisorPage() {
                 <button onClick={() => setActiveTab("strategy")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
                   📊 現物戦略を見る
                 </button>
-                <button onClick={() => setActiveTab("chat")} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">
+                <button onClick={() => goToChat("margin")} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium">
                   💬 AIに相談する
                 </button>
               </div>
@@ -1982,8 +2055,40 @@ export default function AdvisorPage() {
       {/* ===== CHAT TAB ===== */}
       {activeTab === "chat" && (
         <div className="flex flex-col h-[calc(100vh-240px)]">
+          {/* 他タブの分析を引き継いで来た場合のバナー + そのまま送れる質問 */}
+          {chatSeed && (
+            <div className="mb-4 border border-emerald-800/40 bg-emerald-950/20 rounded-xl p-4">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <p className="text-sm text-emerald-300 font-medium">
+                  {SEED_LABEL[chatSeed]}
+                </p>
+                <button
+                  onClick={() => setChatSeed(null)}
+                  className="text-xs text-zinc-500 hover:text-zinc-300 shrink-0"
+                  aria-label="引き継ぎバナーを閉じる"
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="text-xs text-zinc-500 mb-3">
+                内容はコピペ不要でAIに渡っています。そのまま質問できます。
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {SEED_QUESTIONS[chatSeed].map((q, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setChatInput(q)}
+                    className="text-left text-sm p-3 border border-emerald-800/30 bg-zinc-900/40 rounded-lg hover:bg-emerald-900/20 text-zinc-300 hover:text-white transition-colors"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Quick questions */}
-          {messages.length === 0 && (
+          {messages.length === 0 && !chatSeed && (
             <div className="mb-4">
               <p className="text-sm text-zinc-400 mb-3">
                 投資に関する質問を何でもどうぞ。配当、株主優待、銘柄分析、投資額の相談など。

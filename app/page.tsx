@@ -216,12 +216,20 @@ export default function ScannerPage() {
                           : "border-red-700 bg-red-950/30"
                       }`}
                     >
+                      {r.score > 65 && r.risk.gate === "TRADEABLE" && (
+                        <span className="text-[9px] px-1 bg-green-700 text-green-100 rounded">高確信EV</span>
+                      )}
                       <div className="flex justify-between items-start">
                         <div>
                           <span className="font-bold text-lg">{r.ticker}</span>
                           <span className="ml-2 text-sm text-zinc-400">{r.name}</span>
                         </div>
-                        <SignalBadge signal={r.signal} />
+                        <div className="flex items-center gap-1">
+                          <SignalBadge signal={r.signal} />
+                          <span className="text-[9px] text-zinc-500">
+                            {r.score > 70 && r.risk.gate === "TRADEABLE" ? "高確信" : r.risk.gate === "REDUCE_SIZE" ? "縮小推奨" : ""}
+                          </span>
+                        </div>
                       </div>
                       <div className="mt-2 text-2xl font-bold">
                         ¥{r.close.toLocaleString(undefined, { maximumFractionDigits: 2 })}
@@ -328,6 +336,19 @@ export default function ScannerPage() {
             </table>
           </div>
         </>
+      )}
+
+      {results.length > 0 && (
+        <div className="mt-6 p-4 border border-blue-800/40 bg-blue-950/10 rounded-xl text-sm">
+          <div className="font-semibold text-blue-300 mb-1">半自動運用フロー（おすすめ）</div>
+          <ol className="list-decimal ml-5 text-zinc-400 space-y-0.5">
+            <li>強シグナル or リスク低 の銘柄をクリックして詳細分析へ</li>
+            <li>Advisor → Margin Strategy または Council で「指値メモ」を生成</li>
+            <li>コピーボタンでSBI用テキスト取得 → 自分で指値入力</li>
+            <li>Councilページで「台帳に記録」して後で勝率を振り返る</li>
+          </ol>
+          <div className="mt-2 text-[11px] text-zinc-500">自動全任せではなく「AI秘書＋あなたが最終判断」でコンスタントに狙う。</div>
+        </div>
       )}
 
       {!loading && results.length === 0 && (

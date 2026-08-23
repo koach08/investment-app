@@ -135,6 +135,39 @@ ${clipped}`;
     }
   }
 
+  // === モーニングブリーフ / 信用取引分析もチャットに引き継ぐ ===
+  // 各タブの「AIに相談する」から来たとき、その分析を前提に会話できるようにする
+  const serializeAnalysis = (value: unknown, limit = 6000): string => {
+    if (!value) return "";
+    try {
+      const str = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      if (!str || str.length <= 20) return "";
+      return str.length > limit ? str.slice(0, limit) + "\n…(以下省略)" : str;
+    } catch {
+      return "";
+    }
+  };
+
+  let otherAnalysisInfo = "";
+  const morningStr = serializeAnalysis(context?.morningBrief);
+  if (morningStr) {
+    otherAnalysisInfo += `
+
+## ☀️ あなた自身が直近に生成した「モーニングブリーフ」（このアプリのモーニングタブの出力）
+この内容と矛盾する発言をするな。前提として会話を継続せよ。
+
+${morningStr}`;
+  }
+  const marginStr = serializeAnalysis(context?.marginStrategy);
+  if (marginStr) {
+    otherAnalysisInfo += `
+
+## ⚡ あなた自身が直近に生成した「信用取引分析」（このアプリの信用取引タブの出力）
+提示済みの建玉方向・エントリー/損切り価格と矛盾する発言をするな。前提として会話を継続せよ。
+
+${marginStr}`;
+  }
+
   // === オープン建玉（方向＋建玉理由）を引き継ぐ ===
   // 「ANAを空売りしろ」と提案→信用で建てた、を保持しないと「なぜ信用なんだ」と矛盾する
   let positionsInfo = "";
@@ -204,6 +237,7 @@ ${context.positions}`;
 ${holdingsInfo}
 ${positionsInfo}
 ${strategyInfo}
+${otherAnalysisInfo}
 ${realtimeInfo}
 
 ## 現在の市場コンテキスト
