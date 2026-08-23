@@ -181,27 +181,30 @@ export default function AssetsPage() {
         { key: "timeline", setter: setTimeline, storageKey: TIMELINE_KEY },
       ];
 
-      for (const { key, setter, storageKey } of keys) {
-        let loaded = false;
-        // Try server first (source of truth)
-        try {
-          const res = await fetch(`/api/save-data?key=${key}`);
-          const result = await res.json();
-          if (result.data && (Array.isArray(result.data) ? result.data.length > 0 : true)) {
-            setter(result.data);
-            localStorage.setItem(storageKey, JSON.stringify(result.data));
-            loaded = true;
-          }
-        } catch { /* ignore */ }
-
-        // Fallback to localStorage if server had no data
-        if (!loaded) {
+      // 5本を順番に取ると待ち時間が積み上がるので並べて取る
+      await Promise.all(
+        keys.map(async ({ key, setter, storageKey }) => {
+          let loaded = false;
+          // Try server first (source of truth)
           try {
-            const saved = localStorage.getItem(storageKey);
-            if (saved) { setter(JSON.parse(saved)); }
+            const res = await fetch(`/api/save-data?key=${key}`);
+            const result = await res.json();
+            if (result.data && (Array.isArray(result.data) ? result.data.length > 0 : true)) {
+              setter(result.data);
+              localStorage.setItem(storageKey, JSON.stringify(result.data));
+              loaded = true;
+            }
           } catch { /* ignore */ }
-        }
-      }
+
+          // Fallback to localStorage if server had no data
+          if (!loaded) {
+            try {
+              const saved = localStorage.getItem(storageKey);
+              if (saved) { setter(JSON.parse(saved)); }
+            } catch { /* ignore */ }
+          }
+        })
+      );
     };
     loadData().then(() => {
       dataLoadedRef.current = true;
