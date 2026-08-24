@@ -6,10 +6,11 @@
  * 円建てと素朴に足すと桁がずれるので、合算する前に必ずここを通す。
  */
 
-export interface FxRates {
-  /** 1 USD = 何円か */
-  USD?: number;
-}
+/**
+ * 通貨コード → 1単位あたりの円。JPY は暗黙で 1。
+ * 取れなかった通貨は値を入れない（0 を入れない）。
+ */
+export type FxRates = { [code: string]: number | undefined };
 
 export interface Convertible {
   marketValue: number;
@@ -21,8 +22,8 @@ export interface Convertible {
 export function toJpy(value: number, currency: string | undefined, rates: FxRates): number | null {
   const c = (currency || "JPY").toUpperCase();
   if (c === "JPY") return value;
-  if (c === "USD") return rates.USD ? value * rates.USD : null;
-  return null;
+  const rate = rates[c];
+  return typeof rate === "number" && rate > 0 ? value * rate : null;
 }
 
 export interface NormalizeResult<T> {

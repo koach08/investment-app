@@ -6,6 +6,7 @@ import { ShieldCheck, ShieldAlert, ShieldX, HelpCircle, Send, RotateCcw } from "
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { analyzeIncome, incomeToBriefing, type DividendLike } from "@/lib/income";
 import { analyzeTaxAccounts, taxAccountsToBriefing, taxSavedPerYear } from "@/lib/tax-accounts";
+import type { FxRates } from "@/lib/fx";
 import {
   analyzeAssetHealth,
   healthToBriefing,
@@ -77,17 +78,17 @@ function NumberField({
   placeholder?: string;
   width?: string;
 }) {
-  const [draft, setDraft] = useState(value > 0 ? String(value) : "");
-  useEffect(() => { setDraft(value > 0 ? String(value) : ""); }, [value]);
+  // 打っている途中の値は input 自身に持たせ、離れたときだけ確定する。
+  // 外から value が変わったら key で作り直して表示を合わせる。
   return (
     <div>
       <label className="block text-xs text-zinc-500 mb-1">{label}</label>
       <input
+        key={value}
         type="number"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          const v = parseFloat(draft);
+        defaultValue={value > 0 ? String(value) : ""}
+        onBlur={(e) => {
+          const v = parseFloat(e.target.value);
           onCommit(Number.isFinite(v) && v > 0 ? v : 0);
         }}
         placeholder={placeholder}
@@ -137,8 +138,10 @@ const STATUS_STYLE: Record<Status, { border: string; text: string; chip: string;
 const yen = (n: number) => `¥${Math.round(n).toLocaleString("ja-JP")}`;
 
 export default function AssetAdvisor({ holdings, manualAssets, timeline, dividends, mfData, fallbackTotal, usdJpy }: Props) {
-  const [fetchedUsdJpy, setFetchedUsdJpy] = useState<number | null>(null);
-  const rate = usdJpy ?? fetchedUsdJpy;
+  const [fetchedRates, setFetchedRates] = useState<FxRates | null>(null);
+  // /api/fx が本命。取れなければ親から渡る USD/JPY だけで動かす
+  const rates: FxRates = fetchedRates ?? (usdJpy ? { JPY: 1, USD: usdJpy } : { JPY: 1 });
+  const rate = rates.USD ?? null;
   const [settings, setSettings] = useState<AssetSettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showQuotaInputs, setShowQuotaInputs] = useState(false);
@@ -155,14 +158,32 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   const [showBriefing, setShowBriefing] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // 為替レートは親から来なければ自分で取りに行く
+  // 為替レート。USD 以外（SGD 等）も混ざるので一括で取る
   useEffect(() => {
-    if (usdJpy) return;
-    fetch("/api/metals-price")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.usdjpy) setFetchedUsdJpy(d.usdjpy); })
-      .catch(() => { /* ignore */ });
-  }, [usdJpy]);
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/fx");
+        if (res.ok) {
+          const d = await res.json();
+          if (!cancelled && d?.rates && Object.keys(d.rates).length > 1) {
+            setFetchedRates(d.rates);
+            return;
+          }
+        }
+      } catch { /* ignore */ }
+      // 取れなければ貴金属APIの USD/JPY だけで代用する
+      try {
+        const res = await fetch("/api/metals-price");
+        if (res.ok) {
+          const d = await res.json();
+          if (!cancelled && d?.usdjpy) setFetchedRates({ JPY: 1, USD: d.usdjpy });
+        }
+      } catch { /* ignore */ }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, []);
 
   // 設定の読み込み（サーバー優先、無ければ localStorage）
   useEffect(() => {
@@ -284,11 +305,13 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
       timeline,
       monthlyExpense,
       targetCashMonths: targetMonths,
-      fxRates: rate ? { USD: rate } : {},
+      fxRates: rates,
       composition,
     };
     return analyzeAssetHealth(payload);
-  }, [holdings, manualAssets, timeline, mfData, fallbackTotal, monthlyExpense, targetMonths, rate, composition]);
+    // rates は毎レンダーで作り直されるので、中身のキーで依存を張る
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdings, manualAssets, timeline, mfData, fallbackTotal, monthlyExpense, targetMonths, JSON.stringify(rates), composition]);
 
   const income = useMemo(
     () => analyzeIncome(dividends, { totalAssets: health.totalAssets, riskAssets: health.riskAssets }),

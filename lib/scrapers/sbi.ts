@@ -14,6 +14,8 @@ export interface SBIHolding {
 }
 
 export interface SBIAccount {
+  /** 円に換算できず totalAssets から外した保有（通貨ごとの合計） */
+  excludedByCurrency?: Record<string, number>;
   holdings: SBIHolding[];
   cashBalance: number;
   buyingPower: number;
@@ -150,8 +152,19 @@ export async function scrapeSBI(userId: string, password: string): Promise<SBIAc
       // Summary extraction failed
     }
 
+    // 米国株の評価額は現地通貨で入っている。ここには為替レートが無いので、
+    // 円建ての行と現金だけで合計を作り、外した分は通貨ごとに申告する。
+    const excludedByCurrency: Record<string, number> = {};
+    for (const h of holdings) {
+      const c = (h.currency ?? "JPY").toUpperCase();
+      if (c !== "JPY") excludedByCurrency[c] = (excludedByCurrency[c] ?? 0) + h.marketValue;
+    }
+
     if (totalAssets === 0) {
-      totalAssets = holdings.reduce((sum, h) => sum + h.marketValue, 0) + cashBalance;
+      const jpyHoldings = holdings
+        .filter((h) => (h.currency ?? "JPY").toUpperCase() === "JPY")
+        .reduce((sum, h) => sum + h.marketValue, 0);
+      totalAssets = jpyHoldings + cashBalance;
     }
 
     return {
@@ -159,6 +172,7 @@ export async function scrapeSBI(userId: string, password: string): Promise<SBIAc
       cashBalance,
       buyingPower,
       totalAssets,
+      excludedByCurrency: Object.keys(excludedByCurrency).length > 0 ? excludedByCurrency : undefined,
       fetchedAt: new Date().toISOString(),
     };
   } finally {

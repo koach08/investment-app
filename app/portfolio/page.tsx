@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { clsx } from "clsx";
 import TickerLink from "@/components/TickerLink";
+import { toJpy, type FxRates } from "@/lib/fx";
 
 interface Holding {
   ticker: string;
@@ -15,9 +16,21 @@ interface Holding {
   value?: number;
   pnl?: number;
   pnlPct?: number;
+  /** 建値の通貨。Yahoo が返す meta.currency をそのまま持つ */
+  currency?: string;
 }
 
 const STORAGE_KEY = "investment-app-portfolio";
+
+const SYMBOLS: Record<string, string> = { JPY: "¥", USD: "$", EUR: "€", GBP: "£", AUD: "A$", SGD: "S$", HKD: "HK$", CNY: "¥" };
+
+/** 建値の通貨で表示する。円と外貨を同じ記号で並べない */
+function money(value: number, currency?: string): string {
+  const c = (currency || "JPY").toUpperCase();
+  const sym = SYMBOLS[c] ?? `${c} `;
+  const digits = c === "JPY" ? 0 : 2;
+  return `${sym}${value.toLocaleString(undefined, { maximumFractionDigits: digits })}`;
+}
 
 export default function PortfolioPage() {
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -25,6 +38,15 @@ export default function PortfolioPage() {
   const [newShares, setNewShares] = useState("");
   const [newAvgPrice, setNewAvgPrice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [fxRates, setFxRates] = useState<FxRates>({ JPY: 1 });
+
+  // 円換算レート。米国株と国内株を素朴に足すと桁がずれるので合算前に揃える
+  useEffect(() => {
+    fetch("/api/fx")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.rates) setFxRates(d.rates); })
+      .catch(() => { /* ignore */ });
+  }, []);
 
   // Load from localStorage
   useEffect(() => {
@@ -86,6 +108,7 @@ export default function PortfolioPage() {
             return {
               ...h,
               name: data.name || h.ticker,
+              currency: data.currency || h.currency || "JPY",
               currentPrice,
               change,
               changePct,
@@ -111,13 +134,26 @@ export default function PortfolioPage() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const totalValue = holdings.reduce((sum, h) => sum + (h.value || 0), 0);
-  const totalPnl = holdings.reduce((sum, h) => sum + (h.pnl || 0), 0);
-  const totalCost = holdings.reduce(
-    (sum, h) => sum + h.avgPrice * h.shares,
-    0
-  );
+  // 合算はすべて円に直してから。直せない通貨は足さずに件数を控える
+  let totalValue = 0;
+  let totalPnl = 0;
+  let totalCost = 0;
+  const unconvertible: string[] = [];
+  for (const h of holdings) {
+    const cur = h.currency || "JPY";
+    const v = toJpy(h.value || 0, cur, fxRates);
+    const p = toJpy(h.pnl || 0, cur, fxRates);
+    const c = toJpy(h.avgPrice * h.shares, cur, fxRates);
+    if (v === null || p === null || c === null) {
+      unconvertible.push(`${h.ticker}(${cur})`);
+      continue;
+    }
+    totalValue += v;
+    totalPnl += p;
+    totalCost += c;
+  }
   const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+  const hasForeign = holdings.some((h) => (h.currency || "JPY") !== "JPY");
 
   return (
     <div>
@@ -173,6 +209,17 @@ export default function PortfolioPage() {
               ¥{totalCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </div>
           </div>
+        </div>
+      )}
+
+      {(hasForeign || unconvertible.length > 0) && (
+        <div className="text-xs text-zinc-500 mb-6 -mt-3">
+          {hasForeign && fxRates.USD && <>外貨建ては 1 USD = {fxRates.USD.toFixed(2)}円 で円に換算して合計しています。</>}
+          {unconvertible.length > 0 && (
+            <span className="text-amber-500">
+              {" "}為替レートが取れず合計に入れられなかった銘柄: {unconvertible.join(", ")}
+            </span>
+          )}
         </div>
       )}
 
@@ -239,12 +286,10 @@ export default function PortfolioPage() {
                   <td className="py-2 px-2">{h.name}</td>
                   <td className="py-2 px-2 text-right font-mono">{h.shares}</td>
                   <td className="py-2 px-2 text-right font-mono">
-                    {h.avgPrice.toLocaleString()}
+                    {money(h.avgPrice, h.currency)}
                   </td>
                   <td className="py-2 px-2 text-right font-mono">
-                    {h.currentPrice?.toLocaleString(undefined, {
-                      maximumFractionDigits: 2,
-                    }) || "-"}
+                    {h.currentPrice != null ? money(h.currentPrice, h.currency) : "-"}
                   </td>
                   <td
                     className={clsx(
@@ -259,11 +304,20 @@ export default function PortfolioPage() {
                       : "-"}
                   </td>
                   <td className="py-2 px-2 text-right font-mono">
-                    {h.value
-                      ? `¥${h.value.toLocaleString(undefined, {
-                          maximumFractionDigits: 0,
-                        })}`
-                      : "-"}
+                    {h.value ? (
+                      <>
+                        {money(h.value, h.currency)}
+                        {(h.currency || "JPY") !== "JPY" && (
+                          <div className="text-xs text-zinc-600">
+                            {toJpy(h.value, h.currency, fxRates) === null
+                              ? "円換算不可"
+                              : `≒ ¥${Math.round(toJpy(h.value, h.currency, fxRates)!).toLocaleString()}`}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      "-"
+                    )}
                   </td>
                   <td
                     className={clsx(
@@ -272,9 +326,7 @@ export default function PortfolioPage() {
                     )}
                   >
                     {h.pnl != null
-                      ? `${h.pnl >= 0 ? "+" : ""}¥${h.pnl.toLocaleString(undefined, {
-                          maximumFractionDigits: 0,
-                        })} (${h.pnlPct?.toFixed(1)}%)`
+                      ? `${h.pnl >= 0 ? "+" : ""}${money(h.pnl, h.currency)} (${h.pnlPct?.toFixed(1)}%)`
                       : "-"}
                   </td>
                   <td className="py-2 px-2 text-center">
