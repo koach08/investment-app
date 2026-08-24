@@ -26,14 +26,27 @@ export async function GET() {
       amount: balances.get(a.id) ?? 0,
       currency: a.currency_code ?? "JPY",
     }));
-    const total = enriched.reduce((s, a) => s + a.amount, 0);
+    // 口座ごとに通貨が付く。外貨口座をそのまま足すと桁がずれるので、
+    // 円建てだけで合計し、外した分は通貨ごとに申告する。
+    const excludedByCurrency: Record<string, number> = {};
+    let total = 0;
+    for (const a of enriched) {
+      const c = (a.currency ?? "JPY").toUpperCase();
+      if (c === "JPY") total += a.amount;
+      else excludedByCurrency[c] = (excludedByCurrency[c] ?? 0) + a.amount;
+    }
 
     return NextResponse.json({
       connected: true,
       totalJPY: total,
       accountCount: enriched.length,
       accounts: enriched,
-      note: "残高は money records 365日分から計算。初期残高未設定の場合は実残高と乖離あり。",
+      excludedByCurrency: Object.keys(excludedByCurrency).length > 0 ? excludedByCurrency : undefined,
+      note:
+        "残高は money records 365日分から計算。初期残高未設定の場合は実残高と乖離あり。" +
+        (Object.keys(excludedByCurrency).length > 0
+          ? " 外貨建ての口座は totalJPY に含めていない（excludedByCurrency を参照）。"
+          : ""),
     });
   } catch (e) {
     return NextResponse.json(
