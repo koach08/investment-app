@@ -93,7 +93,7 @@ test("いまの保有で裏付けが取れる配当と取れない配当を分�
   // 印が無いうちは未確認として、見込みには入れない
   assert.equal(inc.sustained.unknown, 3_000);
   assert.equal(inc.sustained.expectedForward, 5_000);
-  assert.ok(inc.notes.some((n) => n.includes("銘柄ごとに印を付けると")));
+  assert.ok(inc.notes.some((n) => n.includes("見込みに入れていません")));
 });
 
 test("保有データが無ければ裏付けの判定はしない", () => {
@@ -127,7 +127,7 @@ test("売却済みの印を付けると来年の見込みから外れる", () =>
 
   const sold = analyzeIncome(rows, {
     ...opts,
-    statusByName: { "ANAホールディングス 9202": "sold" as const },
+    statusByName: { "ANAホールディングス 9202": { status: "sold" as const } },
   });
   assert.equal(sold.sustained.soldConfirmed, 3_000);
   assert.equal(sold.sustained.unknown, 2_000);
@@ -137,7 +137,7 @@ test("売却済みの印を付けると来年の見込みから外れる", () =>
 
   const held = analyzeIncome(rows, {
     ...opts,
-    statusByName: { "ANAホールディングス 9202": "sold" as const, "日本航空 9201": "held" as const },
+    statusByName: { "ANAホールディングス 9202": { status: "sold" as const }, "日本航空 9201": { status: "held" as const } },
   });
   assert.equal(held.sustained.heldConfirmed, 2_000);
   assert.equal(held.sustained.unknown, 0);
@@ -156,10 +156,68 @@ test("印の合計は裏付けが取れない額と一致する", () => {
       riskAssets: 1_000_000,
       today: new Date("2025-09-05"),
       holdings: [{ name: "コカ-コーラ", code: "KO" }],
-      statusByName: { "ANA 9202": "sold" as const },
+      statusByName: { "ANA 9202": { status: "sold" as const } },
     }
   );
   const s = inc.sustained;
   assert.equal(s.soldConfirmed + s.heldConfirmed + s.unknown, s.unmatched);
   assert.equal(s.matched + s.unmatched, inc.last12m);
+});
+
+test("一部売却は残った割合だけを見込みに入れる", () => {
+  const inc = analyzeIncome(
+    [
+      d("2025/09/01", 5_000, { name: "コカ-コーラ KO", ticker: "KO" }),
+      d("2025/08/01", 14_344, { name: "ANA 9202", ticker: "9202.T" }),
+    ],
+    {
+      totalAssets: 1_000_000,
+      riskAssets: 1_000_000,
+      today: new Date("2025-09-05"),
+      holdings: [{ name: "コカ-コーラ", code: "KO" }],
+      statusByName: { "ANA 9202": { status: "partial" as const, remainingPct: 50 } },
+    }
+  );
+  assert.equal(inc.sustained.heldConfirmed, 7_172);
+  assert.equal(inc.sustained.soldConfirmed, 7_172);
+  assert.equal(inc.sustained.expectedForward, 5_000 + 7_172);
+});
+
+test("印が無い分を保有扱いにするか選べる", () => {
+  const rows = [
+    d("2025/09/01", 5_000, { name: "コカ-コーラ KO", ticker: "KO" }),
+    d("2025/08/01", 3_000, { name: "ANA 9202", ticker: "9202.T" }),
+  ];
+  const base = {
+    totalAssets: 1_000_000,
+    riskAssets: 1_000_000,
+    today: new Date("2025-09-05"),
+    holdings: [{ name: "コカ-コーラ", code: "KO" }],
+  };
+  const excluded = analyzeIncome(rows, base);
+  assert.equal(excluded.sustained.expectedForward, 5_000);
+  const included = analyzeIncome(rows, { ...base, unmatchedDefault: "include" as const });
+  assert.equal(included.sustained.expectedForward, 8_000);
+  assert.ok(included.notes.some((n) => n.includes("保有し続けているものとして")));
+});
+
+test("既定を保有扱いにしても、売却の印は優先される", () => {
+  const inc = analyzeIncome(
+    [
+      d("2025/09/01", 5_000, { name: "コカ-コーラ KO", ticker: "KO" }),
+      d("2025/08/01", 3_000, { name: "ANA 9202", ticker: "9202.T" }),
+      d("2025/07/01", 2_000, { name: "フジ 4676", ticker: "4676.T" }),
+    ],
+    {
+      totalAssets: 1_000_000,
+      riskAssets: 1_000_000,
+      today: new Date("2025-09-05"),
+      holdings: [{ name: "コカ-コーラ", code: "KO" }],
+      unmatchedDefault: "include" as const,
+      statusByName: { "フジ 4676": { status: "sold" as const } },
+    }
+  );
+  assert.equal(inc.sustained.soldConfirmed, 2_000);
+  assert.equal(inc.sustained.unknown, 3_000);
+  assert.equal(inc.sustained.expectedForward, 5_000 + 3_000);
 });

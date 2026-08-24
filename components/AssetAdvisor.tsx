@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { clsx } from "clsx";
 import { ShieldCheck, ShieldAlert, ShieldX, HelpCircle, Send, RotateCcw } from "lucide-react";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
-import { analyzeIncome, incomeToBriefing, type DividendLike, type IncomeStatus } from "@/lib/income";
+import { analyzeIncome, incomeToBriefing, type DividendLike, type IncomeMark, type UnmatchedDefault } from "@/lib/income";
 import { analyzeTaxAccounts, taxAccountsToBriefing, taxSavedPerYear } from "@/lib/tax-accounts";
 import type { FxRates } from "@/lib/fx";
 import {
@@ -148,7 +148,9 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   const [showQuotaInputs, setShowQuotaInputs] = useState(false);
   const [chatLoaded, setChatLoaded] = useState(false);
   const [composition, setComposition] = useState<Record<string, Composition>>({});
-  const [incomeStatus, setIncomeStatus] = useState<Record<string, IncomeStatus>>({});
+  const [incomeStatus, setIncomeStatus] = useState<Record<string, IncomeMark>>({});
+  const [unmatchedDefault, setUnmatchedDefault] = useState<UnmatchedDefault>("exclude");
+  const [showAllUnmatched, setShowAllUnmatched] = useState(false);
   const monthlyExpense = settings.monthlyExpense;
   const targetMonths = settings.targetMonths;
 
@@ -238,7 +240,7 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   // 配当の出どころに付けた印（売却済み / まだ持っている）
   useEffect(() => {
     const load = async () => {
-      let v: Record<string, IncomeStatus> | null = null;
+      let v: { marks?: Record<string, IncomeMark>; unmatchedDefault?: UnmatchedDefault } | null = null;
       try {
         const res = await fetch("/api/save-data?key=income-status");
         const json = await res.json();
@@ -250,22 +252,35 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
           if (local) v = JSON.parse(local);
         } catch { /* ignore */ }
       }
-      if (v) setIncomeStatus(v);
+      if (v?.marks) setIncomeStatus(v.marks);
+      if (v?.unmatchedDefault) setUnmatchedDefault(v.unmatchedDefault);
     };
     load();
   }, []);
 
-  const setIncomeMark = (name: string, mark: IncomeStatus) => {
-    const next = { ...incomeStatus };
-    if (next[name] === mark) delete next[name];
-    else next[name] = mark;
-    setIncomeStatus(next);
-    try { localStorage.setItem(INCOME_STATUS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  const persistIncomeStatus = (marks: Record<string, IncomeMark>, def: UnmatchedDefault) => {
+    setIncomeStatus(marks);
+    setUnmatchedDefault(def);
+    const payload = { marks, unmatchedDefault: def };
+    try { localStorage.setItem(INCOME_STATUS_KEY, JSON.stringify(payload)); } catch { /* ignore */ }
     fetch("/api/save-data", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "income-status", data: next }),
+      body: JSON.stringify({ key: "income-status", data: payload }),
     }).catch(() => { /* ignore */ });
+  };
+
+  const setIncomeMark = (name: string, status: IncomeMark["status"]) => {
+    const next = { ...incomeStatus };
+    if (next[name]?.status === status) delete next[name];
+    else next[name] = status === "partial" ? { status, remainingPct: next[name]?.remainingPct ?? 50 } : { status };
+    persistIncomeStatus(next, unmatchedDefault);
+  };
+
+  const setRemainingPct = (name: string, raw: string) => {
+    const v = parseFloat(raw);
+    const pct = Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+    persistIncomeStatus({ ...incomeStatus, [name]: { status: "partial", remainingPct: pct } }, unmatchedDefault);
   };
 
   const persistComposition = (next: Record<string, Composition>) => {
@@ -355,8 +370,9 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
         riskAssets: health.riskAssets,
         holdings: holdings.map((h) => ({ name: h.name, code: h.code })),
         statusByName: incomeStatus,
+        unmatchedDefault,
       }),
-    [dividends, health.totalAssets, health.riskAssets, holdings, incomeStatus]
+    [dividends, health.totalAssets, health.riskAssets, holdings, incomeStatus, unmatchedDefault]
   );
 
   const investableCash = Math.max(0, health.buckets.cash - monthlyExpense * targetMonths);
@@ -721,16 +737,45 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
           {/* いまの保有で裏付けが取れるか */}
           {income.sustained.checkable && (
             <div className="border border-zinc-800 rounded-lg p-3 mb-4">
-              <div className="flex items-baseline justify-between gap-2 mb-2">
-                <span className="text-xs text-zinc-500">この配当は来年も入るのか</span>
-                <span className="text-xs text-zinc-600">売却したものに印を付けると見込みが確定します</span>
+              <div className="text-xs text-zinc-500 mb-2">この配当は来年も入るのか</div>
+
+              {/* 保有明細が欠けている場合はまずそれを言う */}
+              {income.sustained.unmatchedNames.length > 8 && (
+                <div className="text-xs text-amber-500/90 bg-amber-950/20 border border-amber-900/40 rounded p-2 mb-3 leading-relaxed">
+                  裏付けが取れない銘柄が {income.sustained.unmatchedNames.length}件あります。
+                  売却したからではなく、国内株などの保有明細がアプリに取り込まれていないためです。
+                  SBI のポートフォリオ画面を「テキスト貼付」タブに貼れば、大半は自動で一致します。
+                </div>
+              )}
+
+              {/* 未確認分の扱い */}
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <span className="text-xs text-zinc-500">印を付けていない分の扱い:</span>
+                {([
+                  ["include", "すべて保有し続けている"],
+                  ["exclude", "見込みに入れない"],
+                ] as [UnmatchedDefault, string][]).map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => persistIncomeStatus(incomeStatus, k)}
+                    className={clsx(
+                      "text-xs px-2 py-1 rounded border",
+                      unmatchedDefault === k
+                        ? "bg-zinc-700 border-zinc-600 text-zinc-100"
+                        : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
 
               <div className="flex h-3 rounded-full overflow-hidden bg-zinc-800 mb-2">
                 {([
                   ["bg-emerald-600/70", income.sustained.matched],
                   ["bg-emerald-800/70", income.sustained.heldConfirmed],
-                  ["bg-zinc-600/60", income.sustained.unknown],
+                  ["bg-zinc-600/60", unmatchedDefault === "include" ? 0 : income.sustained.unknown],
+                  ["bg-emerald-900/50", unmatchedDefault === "include" ? income.sustained.unknown : 0],
                   ["bg-red-900/70", income.sustained.soldConfirmed],
                 ] as [string, number][]).map(([cls, v], i) => (
                   <div key={i} className={cls} style={{ width: `${income.last12m > 0 ? (v / income.last12m) * 100 : 0}%` }} />
@@ -743,56 +788,80 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
                 <span className="text-zinc-500">（月あたり {yen(income.sustained.expectedForward / 12)}）</span>
               </div>
               <div className="text-xs text-zinc-500 mt-1">
-                内訳: 保有で裏付け {yen(income.sustained.matched)}
-                {income.sustained.heldConfirmed > 0 && <> / まだ持っている {yen(income.sustained.heldConfirmed)}</>}
-                {income.sustained.soldConfirmed > 0 && <> / <span className="text-red-400">売却済み {yen(income.sustained.soldConfirmed)}</span></>}
-                {income.sustained.unknown > 0 && <> / 未確認 {yen(income.sustained.unknown)}</>}
+                直近12ヶ月 {yen(income.last12m)} との差{" "}
+                <span className={income.sustained.expectedForward >= income.last12m ? "text-zinc-400" : "text-red-400"}>
+                  {income.sustained.expectedForward >= income.last12m ? "+" : "−"}
+                  {yen(Math.abs(income.last12m - income.sustained.expectedForward))}
+                </span>
+                {income.sustained.soldConfirmed > 0 && <>（売却で消える分 {yen(income.sustained.soldConfirmed)}）</>}
               </div>
 
               {income.sustained.unmatchedNames.length > 0 && (
                 <div className="mt-3 space-y-1.5">
-                  <div className="text-xs text-zinc-600">保有データに見当たらない銘柄（印を付けてください）</div>
-                  {income.sustained.unmatchedNames.map((u) => (
-                    <div key={u.name} className="flex items-center gap-2 text-xs">
+                  <div className="text-xs text-zinc-600">
+                    売ったもの・減らしたものだけ印を付けてください
+                  </div>
+                  {(showAllUnmatched
+                    ? income.sustained.unmatchedNames
+                    : income.sustained.unmatchedNames.slice(0, 8)
+                  ).map((u) => (
+                    <div key={u.name} className="flex items-center gap-1.5 text-xs">
                       <span
                         className={clsx(
                           "flex-1 truncate",
-                          u.status === "sold" ? "text-zinc-600 line-through" : "text-zinc-400"
+                          u.mark?.status === "sold" ? "text-zinc-600 line-through" : "text-zinc-400"
                         )}
                       >
                         {u.name}
                       </span>
                       <span className="font-mono text-zinc-500 whitespace-nowrap">{yen(u.amount)}</span>
-                      <button
-                        onClick={() => setIncomeMark(u.name, "held")}
-                        className={clsx(
-                          "px-2 py-0.5 rounded border whitespace-nowrap",
-                          u.status === "held"
-                            ? "bg-emerald-900/50 border-emerald-700 text-emerald-300"
-                            : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
-                        )}
-                      >
-                        まだ持っている
-                      </button>
-                      <button
-                        onClick={() => setIncomeMark(u.name, "sold")}
-                        className={clsx(
-                          "px-2 py-0.5 rounded border whitespace-nowrap",
-                          u.status === "sold"
-                            ? "bg-red-900/50 border-red-800 text-red-300"
-                            : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
-                        )}
-                      >
-                        売却済み
-                      </button>
+                      {u.mark?.status === "partial" && (
+                        <span className="flex items-center gap-1 whitespace-nowrap">
+                          <input
+                            key={`${u.name}-${u.mark.remainingPct}`}
+                            type="number"
+                            min={0}
+                            max={100}
+                            defaultValue={u.mark.remainingPct ?? 50}
+                            onBlur={(e) => setRemainingPct(u.name, e.target.value)}
+                            className="w-14 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-right"
+                          />
+                          <span className="text-zinc-600">% 残</span>
+                        </span>
+                      )}
+                      {([
+                        ["partial", "一部売却"],
+                        ["sold", "全部売却"],
+                      ] as [IncomeMark["status"], string][]).map(([k, label]) => (
+                        <button
+                          key={k}
+                          onClick={() => setIncomeMark(u.name, k)}
+                          className={clsx(
+                            "px-2 py-0.5 rounded border whitespace-nowrap",
+                            u.mark?.status === k
+                              ? k === "sold"
+                                ? "bg-red-900/50 border-red-800 text-red-300"
+                                : "bg-amber-900/40 border-amber-800 text-amber-300"
+                              : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   ))}
+                  {income.sustained.unmatchedNames.length > 8 && (
+                    <button
+                      onClick={() => setShowAllUnmatched((v) => !v)}
+                      className="text-xs text-zinc-500 hover:text-zinc-300"
+                    >
+                      {showAllUnmatched
+                        ? "上位8件だけ表示"
+                        : `残り ${income.sustained.unmatchedNames.length - 8}件を表示`}
+                    </button>
+                  )}
                 </div>
               )}
-
-              <p className="text-[11px] text-zinc-600 mt-2 leading-relaxed">
-                印を付けていない分は見込みに入れていません。実際にはこれより増えることがあります。
-              </p>
             </div>
           )}
 
