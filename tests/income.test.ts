@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { analyzeIncome, type DividendLike } from "@/lib/income";
+import { analyzeIncome, matchesHolding, type DividendLike } from "@/lib/income";
 
 const d = (date: string, amount: number, o: Partial<DividendLike> = {}): DividendLike => ({
   date,
@@ -71,4 +71,40 @@ test("記録がなければ空の結果と案内を返す", () => {
   assert.equal(inc.recordCount, 0);
   assert.equal(inc.last12m, 0);
   assert.ok(inc.notes[0].includes("記録がありません"));
+});
+
+test("いまの保有で裏付けが取れる配当と取れない配当を分ける", () => {
+  const inc = analyzeIncome(
+    [
+      d("2025/09/01", 5_000, { name: "コカ-コーラ KO", ticker: "KO", product: "米国株式" }),
+      d("2025/08/01", 3_000, { name: "ANAホールディングス 9202", ticker: "9202.T" }),
+    ],
+    {
+      totalAssets: 1_000_000,
+      riskAssets: 1_000_000,
+      today: new Date("2025-09-05"),
+      holdings: [{ name: "コカ-コーラ", code: "KO" }],
+    }
+  );
+  assert.equal(inc.sustained.checkable, true);
+  assert.equal(inc.sustained.matched, 5_000);
+  assert.equal(inc.sustained.unmatched, 3_000);
+  assert.equal(inc.sustained.unmatchedNames[0].name, "ANAホールディングス 9202");
+  assert.ok(inc.notes.some((n) => n.includes("売却済みと決めつけないでください")));
+});
+
+test("保有データが無ければ裏付けの判定はしない", () => {
+  const inc = analyzeIncome([d("2025/09/01", 5_000)], {
+    totalAssets: 1_000_000,
+    riskAssets: 1_000_000,
+    today: new Date("2025-09-05"),
+  });
+  assert.equal(inc.sustained.checkable, false);
+  assert.equal(inc.sustained.matched, 0);
+});
+
+test("コード一致でも名前の部分一致でも拾う", () => {
+  assert.equal(matchesHolding({ name: "日本航空 9201", ticker: "9201.T" }, [{ name: "JAL", code: "9201" }]), true);
+  assert.equal(matchesHolding({ name: "コカ-コーラ KO", ticker: "KO" }, [{ name: "コカ・コーラ", code: "" }]), true);
+  assert.equal(matchesHolding({ name: "任天堂 7974", ticker: "7974.T" }, [{ name: "トヨタ", code: "7203" }]), false);
 });

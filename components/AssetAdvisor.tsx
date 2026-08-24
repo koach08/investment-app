@@ -314,8 +314,13 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   }, [holdings, manualAssets, timeline, mfData, fallbackTotal, monthlyExpense, targetMonths, JSON.stringify(rates), composition]);
 
   const income = useMemo(
-    () => analyzeIncome(dividends, { totalAssets: health.totalAssets, riskAssets: health.riskAssets }),
-    [dividends, health.totalAssets, health.riskAssets]
+    () =>
+      analyzeIncome(dividends, {
+        totalAssets: health.totalAssets,
+        riskAssets: health.riskAssets,
+        holdings: holdings.map((h) => ({ name: h.name, code: h.code })),
+      }),
+    [dividends, health.totalAssets, health.riskAssets, holdings]
   );
 
   const investableCash = Math.max(0, health.buckets.cash - monthlyExpense * targetMonths);
@@ -676,6 +681,41 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
               <div className="text-xs text-zinc-500 mt-1">{income.recordCount}件</div>
             </div>
           </div>
+
+          {/* いまの保有で裏付けが取れるか */}
+          {income.sustained.checkable && (
+            <div className="border border-zinc-800 rounded-lg p-3 mb-4">
+              <div className="text-xs text-zinc-500 mb-2">この配当は来年も入るのか</div>
+              <div className="flex h-3 rounded-full overflow-hidden bg-zinc-800 mb-2">
+                <div
+                  className="bg-emerald-600/70"
+                  style={{ width: `${income.last12m > 0 ? (income.sustained.matched / income.last12m) * 100 : 0}%` }}
+                />
+                <div
+                  className="bg-zinc-600/70"
+                  style={{ width: `${income.last12m > 0 ? (income.sustained.unmatched / income.last12m) * 100 : 0}%` }}
+                />
+              </div>
+              <div className="text-sm text-zinc-300">
+                いまの保有で裏付けが取れるのは <span className="text-emerald-400 font-bold">{yen(income.sustained.matched)}</span>
+                、取れないのは <span className="text-zinc-400 font-bold">{yen(income.sustained.unmatched)}</span>
+              </div>
+              {income.sustained.unmatchedNames.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {income.sustained.unmatchedNames.slice(0, 5).map((u) => (
+                    <div key={u.name} className="flex items-center gap-2 text-xs">
+                      <span className="flex-1 truncate text-zinc-500">{u.name}</span>
+                      <span className="font-mono text-zinc-500">{yen(u.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] text-zinc-600 mt-2 leading-relaxed">
+                売却したのか、保有データに取り込まれていないだけなのかは、この数字では区別できません。
+                内訳が未取得の口座に入っている可能性もあります。
+              </p>
+            </div>
+          )}
 
           {/* 年別 */}
           {income.byYear.length > 0 && (

@@ -24,6 +24,18 @@ export interface DividendLike {
   currency?: string;
 }
 
+/** 配当の出どころが、いまも保有として確認できるか */
+export interface SustainedIncome {
+  /** いまの保有データで裏付けが取れる直近12ヶ月の配当 */
+  matched: number;
+  /** 裏付けが取れない分 */
+  unmatched: number;
+  /** 裏付けが取れない銘柄（金額の大きい順） */
+  unmatchedNames: { name: string; ticker: string; amount: number }[];
+  /** 保有データが1件も無いなど、そもそも判定できない場合 */
+  checkable: boolean;
+}
+
 export interface IncomeAnalysis {
   /** 集計の基準日（最も新しい入金日）。今日ではない */
   anchorDate: string | null;
@@ -44,7 +56,38 @@ export interface IncomeAnalysis {
   targets: { monthlyTarget: number; requiredPrincipal: number | null; additionalNeeded: number | null }[];
   allTime: number;
   recordCount: number;
+  sustained: SustainedIncome;
   notes: string[];
+}
+
+export interface HoldingRef {
+  name?: string;
+  code?: string;
+}
+
+/** 銘柄名から記号や余白を落として突き合わせやすくする */
+function normalizeName(s: string): string {
+  return s
+    .replace(/\s+/g, "")
+    .replace(/[（）()・\-‐−ー]/g, "")
+    .replace(/[A-Z]{1,5}$/, "")
+    .toLowerCase();
+}
+
+/** 配当のレコードが、いまの保有のどれかに対応するか */
+export function matchesHolding(div: { name: string; ticker: string }, holdings: HoldingRef[]): boolean {
+  const dTicker = (div.ticker || "").replace(/\.T$/, "").toUpperCase();
+  const dName = normalizeName(div.name || "");
+  for (const h of holdings) {
+    const hCode = (h.code || "").replace(/\.T$/, "").toUpperCase();
+    if (dTicker && hCode && dTicker === hCode) return true;
+    const hName = normalizeName(h.name || "");
+    if (!hName || !dName) continue;
+    if (hName === dName) return true;
+    // 「コカ-コーラ KO」と「コカ-コーラ」のように、片方がもう片方を含む
+    if (hName.length >= 3 && (dName.includes(hName) || hName.includes(dName))) return true;
+  }
+  return false;
 }
 
 /** "2026/2/27" や "2026-02-27" を Date に */
@@ -61,7 +104,7 @@ const TAX_FREE_ACCOUNT = /NISA|つみたて|少額投資/i;
 
 export function analyzeIncome(
   dividends: DividendLike[],
-  opts: { totalAssets: number; riskAssets: number; today?: Date }
+  opts: { totalAssets: number; riskAssets: number; today?: Date; holdings?: HoldingRef[] }
 ): IncomeAnalysis {
   const notes: string[] = [];
   const rows = dividends
@@ -73,6 +116,7 @@ export function analyzeIncome(
       anchorDate: null, last12m: 0, prev12m: 0, monthlyAvg: 0,
       byYear: [], byMonth: [], topContributors: [], byAccount: [],
       yieldOnTotal: null, yieldOnRisk: null, targets: [], allTime: 0, recordCount: 0,
+      sustained: { matched: 0, unmatched: 0, unmatchedNames: [], checkable: false },
       notes: ["配当・分配金の記録がありません。SBI の配当金明細を CSV 取り込みすると集計できます。"],
     };
   }
@@ -154,6 +198,32 @@ export function analyzeIncome(
     .map(([account, amount]) => ({ account, amount, taxFree: TAX_FREE_ACCOUNT.test(account) }))
     .sort((a, b) => b.amount - a.amount);
 
+  // 直近12ヶ月の配当のうち、いまの保有で裏付けが取れる分
+  const holdingRefs = opts.holdings ?? [];
+  const sustained: SustainedIncome = { matched: 0, unmatched: 0, unmatchedNames: [], checkable: holdingRefs.length > 0 };
+  if (sustained.checkable) {
+    const unmatchedMap = new Map<string, { ticker: string; amount: number }>();
+    for (const r of last12Rows) {
+      if (matchesHolding({ name: r.name, ticker: r.ticker }, holdingRefs)) {
+        sustained.matched += r.amount;
+      } else {
+        sustained.unmatched += r.amount;
+        const key = r.name || r.ticker || "(名称不明)";
+        const cur = unmatchedMap.get(key) ?? { ticker: r.ticker, amount: 0 };
+        unmatchedMap.set(key, { ticker: cur.ticker || r.ticker, amount: cur.amount + r.amount });
+      }
+    }
+    sustained.unmatchedNames = [...unmatchedMap.entries()]
+      .map(([name, v]) => ({ name, ticker: v.ticker, amount: v.amount }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 8);
+    if (sustained.unmatched > 0) {
+      notes.push(
+        "裏付けが取れないのは、売却した場合と、保有データにその銘柄が取り込まれていない場合の両方があります。内訳が未取得の口座に入っている可能性もあるため、売却済みと決めつけないでください。"
+      );
+    }
+  }
+
   const yieldOnTotal = opts.totalAssets > 0 ? (last12m / opts.totalAssets) * 100 : null;
   const yieldOnRisk = opts.riskAssets > 0 ? (last12m / opts.riskAssets) * 100 : null;
 
@@ -190,6 +260,7 @@ export function analyzeIncome(
     targets,
     allTime,
     recordCount: rows.length,
+    sustained,
     notes,
   };
 }
@@ -209,6 +280,12 @@ export function incomeToBriefing(inc: IncomeAnalysis): string {
   }
   if (inc.byAccount.length > 0) {
     lines.push(`- 口座別: ${inc.byAccount.map((a) => `${a.account} ${YEN(a.amount)}${a.taxFree ? "(非課税)" : ""}`).join(" / ")}`);
+  }
+  if (inc.sustained.checkable) {
+    lines.push(`- 直近12ヶ月のうち、いまの保有で裏付けが取れるのは ${YEN(inc.sustained.matched)}、取れないのは ${YEN(inc.sustained.unmatched)}`);
+    if (inc.sustained.unmatchedNames.length > 0) {
+      lines.push(`  - 裏付けが取れない銘柄: ${inc.sustained.unmatchedNames.slice(0, 5).map((u) => `${u.name} ${YEN(u.amount)}`).join(" / ")}`);
+    }
   }
   lines.push(`- 記録全期間の累計: ${YEN(inc.allTime)}（${inc.recordCount}件）`);
   for (const n of inc.notes) lines.push(`- 注記: ${n}`);
