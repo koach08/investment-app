@@ -90,7 +90,10 @@ test("いまの保有で裏付けが取れる配当と取れない配当を分�
   assert.equal(inc.sustained.matched, 5_000);
   assert.equal(inc.sustained.unmatched, 3_000);
   assert.equal(inc.sustained.unmatchedNames[0].name, "ANAホールディングス 9202");
-  assert.ok(inc.notes.some((n) => n.includes("売却済みと決めつけないでください")));
+  // 印が無いうちは未確認として、見込みには入れない
+  assert.equal(inc.sustained.unknown, 3_000);
+  assert.equal(inc.sustained.expectedForward, 5_000);
+  assert.ok(inc.notes.some((n) => n.includes("銘柄ごとに印を付けると")));
 });
 
 test("保有データが無ければ裏付けの判定はしない", () => {
@@ -107,4 +110,56 @@ test("コード一致でも名前の部分一致でも拾う", () => {
   assert.equal(matchesHolding({ name: "日本航空 9201", ticker: "9201.T" }, [{ name: "JAL", code: "9201" }]), true);
   assert.equal(matchesHolding({ name: "コカ-コーラ KO", ticker: "KO" }, [{ name: "コカ・コーラ", code: "" }]), true);
   assert.equal(matchesHolding({ name: "任天堂 7974", ticker: "7974.T" }, [{ name: "トヨタ", code: "7203" }]), false);
+});
+
+test("売却済みの印を付けると来年の見込みから外れる", () => {
+  const rows = [
+    d("2025/09/01", 5_000, { name: "コカ-コーラ KO", ticker: "KO", product: "米国株式" }),
+    d("2025/08/01", 3_000, { name: "ANAホールディングス 9202", ticker: "9202.T" }),
+    d("2025/07/01", 2_000, { name: "日本航空 9201", ticker: "9201.T" }),
+  ];
+  const opts = {
+    totalAssets: 1_000_000,
+    riskAssets: 1_000_000,
+    today: new Date("2025-09-05"),
+    holdings: [{ name: "コカ-コーラ", code: "KO" }],
+  };
+
+  const sold = analyzeIncome(rows, {
+    ...opts,
+    statusByName: { "ANAホールディングス 9202": "sold" as const },
+  });
+  assert.equal(sold.sustained.soldConfirmed, 3_000);
+  assert.equal(sold.sustained.unknown, 2_000);
+  // 裏付けのある5,000のみ。売却分も未確認分も入れない
+  assert.equal(sold.sustained.expectedForward, 5_000);
+  assert.ok(sold.notes.some((n) => n.includes("来年は入りません")));
+
+  const held = analyzeIncome(rows, {
+    ...opts,
+    statusByName: { "ANAホールディングス 9202": "sold" as const, "日本航空 9201": "held" as const },
+  });
+  assert.equal(held.sustained.heldConfirmed, 2_000);
+  assert.equal(held.sustained.unknown, 0);
+  assert.equal(held.sustained.expectedForward, 7_000);
+});
+
+test("印の合計は裏付けが取れない額と一致する", () => {
+  const inc = analyzeIncome(
+    [
+      d("2025/09/01", 5_000, { name: "コカ-コーラ KO", ticker: "KO" }),
+      d("2025/08/01", 3_000, { name: "ANA 9202", ticker: "9202.T" }),
+      d("2025/07/01", 2_000, { name: "JAL 9201", ticker: "9201.T" }),
+    ],
+    {
+      totalAssets: 1_000_000,
+      riskAssets: 1_000_000,
+      today: new Date("2025-09-05"),
+      holdings: [{ name: "コカ-コーラ", code: "KO" }],
+      statusByName: { "ANA 9202": "sold" as const },
+    }
+  );
+  const s = inc.sustained;
+  assert.equal(s.soldConfirmed + s.heldConfirmed + s.unknown, s.unmatched);
+  assert.equal(s.matched + s.unmatched, inc.last12m);
 });

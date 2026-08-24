@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { clsx } from "clsx";
 import { ShieldCheck, ShieldAlert, ShieldX, HelpCircle, Send, RotateCcw } from "lucide-react";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
-import { analyzeIncome, incomeToBriefing, type DividendLike } from "@/lib/income";
+import { analyzeIncome, incomeToBriefing, type DividendLike, type IncomeStatus } from "@/lib/income";
 import { analyzeTaxAccounts, taxAccountsToBriefing, taxSavedPerYear } from "@/lib/tax-accounts";
 import type { FxRates } from "@/lib/fx";
 import {
@@ -43,6 +43,7 @@ interface ChatMsg {
 const SETTINGS_KEY = "investment-app-asset-settings";
 const CHAT_KEY = "investment-app-advisor-chat";
 const COMPOSITION_KEY = "investment-app-position-composition";
+const INCOME_STATUS_KEY = "investment-app-income-status";
 /** 保存する会話の上限。これを超えたら古いものから捨てる */
 const CHAT_LIMIT = 40;
 
@@ -147,6 +148,7 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
   const [showQuotaInputs, setShowQuotaInputs] = useState(false);
   const [chatLoaded, setChatLoaded] = useState(false);
   const [composition, setComposition] = useState<Record<string, Composition>>({});
+  const [incomeStatus, setIncomeStatus] = useState<Record<string, IncomeStatus>>({});
   const monthlyExpense = settings.monthlyExpense;
   const targetMonths = settings.targetMonths;
 
@@ -232,6 +234,39 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
     };
     load();
   }, []);
+
+  // 配当の出どころに付けた印（売却済み / まだ持っている）
+  useEffect(() => {
+    const load = async () => {
+      let v: Record<string, IncomeStatus> | null = null;
+      try {
+        const res = await fetch("/api/save-data?key=income-status");
+        const json = await res.json();
+        if (json?.data && typeof json.data === "object") v = json.data;
+      } catch { /* ignore */ }
+      if (!v) {
+        try {
+          const local = localStorage.getItem(INCOME_STATUS_KEY);
+          if (local) v = JSON.parse(local);
+        } catch { /* ignore */ }
+      }
+      if (v) setIncomeStatus(v);
+    };
+    load();
+  }, []);
+
+  const setIncomeMark = (name: string, mark: IncomeStatus) => {
+    const next = { ...incomeStatus };
+    if (next[name] === mark) delete next[name];
+    else next[name] = mark;
+    setIncomeStatus(next);
+    try { localStorage.setItem(INCOME_STATUS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    fetch("/api/save-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "income-status", data: next }),
+    }).catch(() => { /* ignore */ });
+  };
 
   const persistComposition = (next: Record<string, Composition>) => {
     setComposition(next);
@@ -319,8 +354,9 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
         totalAssets: health.totalAssets,
         riskAssets: health.riskAssets,
         holdings: holdings.map((h) => ({ name: h.name, code: h.code })),
+        statusByName: incomeStatus,
       }),
-    [dividends, health.totalAssets, health.riskAssets, holdings]
+    [dividends, health.totalAssets, health.riskAssets, holdings, incomeStatus]
   );
 
   const investableCash = Math.max(0, health.buckets.cash - monthlyExpense * targetMonths);
@@ -685,34 +721,77 @@ export default function AssetAdvisor({ holdings, manualAssets, timeline, dividen
           {/* いまの保有で裏付けが取れるか */}
           {income.sustained.checkable && (
             <div className="border border-zinc-800 rounded-lg p-3 mb-4">
-              <div className="text-xs text-zinc-500 mb-2">この配当は来年も入るのか</div>
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <span className="text-xs text-zinc-500">この配当は来年も入るのか</span>
+                <span className="text-xs text-zinc-600">売却したものに印を付けると見込みが確定します</span>
+              </div>
+
               <div className="flex h-3 rounded-full overflow-hidden bg-zinc-800 mb-2">
-                <div
-                  className="bg-emerald-600/70"
-                  style={{ width: `${income.last12m > 0 ? (income.sustained.matched / income.last12m) * 100 : 0}%` }}
-                />
-                <div
-                  className="bg-zinc-600/70"
-                  style={{ width: `${income.last12m > 0 ? (income.sustained.unmatched / income.last12m) * 100 : 0}%` }}
-                />
+                {([
+                  ["bg-emerald-600/70", income.sustained.matched],
+                  ["bg-emerald-800/70", income.sustained.heldConfirmed],
+                  ["bg-zinc-600/60", income.sustained.unknown],
+                  ["bg-red-900/70", income.sustained.soldConfirmed],
+                ] as [string, number][]).map(([cls, v], i) => (
+                  <div key={i} className={cls} style={{ width: `${income.last12m > 0 ? (v / income.last12m) * 100 : 0}%` }} />
+                ))}
               </div>
+
               <div className="text-sm text-zinc-300">
-                いまの保有で裏付けが取れるのは <span className="text-emerald-400 font-bold">{yen(income.sustained.matched)}</span>
-                、取れないのは <span className="text-zinc-400 font-bold">{yen(income.sustained.unmatched)}</span>
+                来年も入ると見込めるのは{" "}
+                <span className="text-emerald-400 font-bold text-base">{yen(income.sustained.expectedForward)}</span>
+                <span className="text-zinc-500">（月あたり {yen(income.sustained.expectedForward / 12)}）</span>
               </div>
+              <div className="text-xs text-zinc-500 mt-1">
+                内訳: 保有で裏付け {yen(income.sustained.matched)}
+                {income.sustained.heldConfirmed > 0 && <> / まだ持っている {yen(income.sustained.heldConfirmed)}</>}
+                {income.sustained.soldConfirmed > 0 && <> / <span className="text-red-400">売却済み {yen(income.sustained.soldConfirmed)}</span></>}
+                {income.sustained.unknown > 0 && <> / 未確認 {yen(income.sustained.unknown)}</>}
+              </div>
+
               {income.sustained.unmatchedNames.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {income.sustained.unmatchedNames.slice(0, 5).map((u) => (
+                <div className="mt-3 space-y-1.5">
+                  <div className="text-xs text-zinc-600">保有データに見当たらない銘柄（印を付けてください）</div>
+                  {income.sustained.unmatchedNames.map((u) => (
                     <div key={u.name} className="flex items-center gap-2 text-xs">
-                      <span className="flex-1 truncate text-zinc-500">{u.name}</span>
-                      <span className="font-mono text-zinc-500">{yen(u.amount)}</span>
+                      <span
+                        className={clsx(
+                          "flex-1 truncate",
+                          u.status === "sold" ? "text-zinc-600 line-through" : "text-zinc-400"
+                        )}
+                      >
+                        {u.name}
+                      </span>
+                      <span className="font-mono text-zinc-500 whitespace-nowrap">{yen(u.amount)}</span>
+                      <button
+                        onClick={() => setIncomeMark(u.name, "held")}
+                        className={clsx(
+                          "px-2 py-0.5 rounded border whitespace-nowrap",
+                          u.status === "held"
+                            ? "bg-emerald-900/50 border-emerald-700 text-emerald-300"
+                            : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                        )}
+                      >
+                        まだ持っている
+                      </button>
+                      <button
+                        onClick={() => setIncomeMark(u.name, "sold")}
+                        className={clsx(
+                          "px-2 py-0.5 rounded border whitespace-nowrap",
+                          u.status === "sold"
+                            ? "bg-red-900/50 border-red-800 text-red-300"
+                            : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                        )}
+                      >
+                        売却済み
+                      </button>
                     </div>
                   ))}
                 </div>
               )}
+
               <p className="text-[11px] text-zinc-600 mt-2 leading-relaxed">
-                売却したのか、保有データに取り込まれていないだけなのかは、この数字では区別できません。
-                内訳が未取得の口座に入っている可能性もあります。
+                印を付けていない分は見込みに入れていません。実際にはこれより増えることがあります。
               </p>
             </div>
           )}

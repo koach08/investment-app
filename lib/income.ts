@@ -24,14 +24,25 @@ export interface DividendLike {
   currency?: string;
 }
 
-/** 配当の出どころが、いまも保有として確認できるか */
+/** 本人が付けた印。保有データからは売却か未取り込みかを区別できないため */
+export type IncomeStatus = "sold" | "held";
+
+/** 配当の出どころが、来年も残っているか */
 export interface SustainedIncome {
   /** いまの保有データで裏付けが取れる直近12ヶ月の配当 */
   matched: number;
-  /** 裏付けが取れない分 */
+  /** 裏付けが取れない分の合計 */
   unmatched: number;
+  /** そのうち本人が「売却済み」と印を付けた分 */
+  soldConfirmed: number;
+  /** そのうち本人が「まだ持っている」と印を付けた分 */
+  heldConfirmed: number;
+  /** まだ確認していない分 */
+  unknown: number;
+  /** 来年も入ると見込める額（裏付けあり＋まだ持っている） */
+  expectedForward: number;
   /** 裏付けが取れない銘柄（金額の大きい順） */
-  unmatchedNames: { name: string; ticker: string; amount: number }[];
+  unmatchedNames: { name: string; ticker: string; amount: number; status?: IncomeStatus }[];
   /** 保有データが1件も無いなど、そもそも判定できない場合 */
   checkable: boolean;
 }
@@ -104,7 +115,14 @@ const TAX_FREE_ACCOUNT = /NISA|つみたて|少額投資/i;
 
 export function analyzeIncome(
   dividends: DividendLike[],
-  opts: { totalAssets: number; riskAssets: number; today?: Date; holdings?: HoldingRef[] }
+  opts: {
+    totalAssets: number;
+    riskAssets: number;
+    today?: Date;
+    holdings?: HoldingRef[];
+    /** 銘柄名 → 本人が付けた印 */
+    statusByName?: Record<string, IncomeStatus>;
+  }
 ): IncomeAnalysis {
   const notes: string[] = [];
   const rows = dividends
@@ -116,7 +134,10 @@ export function analyzeIncome(
       anchorDate: null, last12m: 0, prev12m: 0, monthlyAvg: 0,
       byYear: [], byMonth: [], topContributors: [], byAccount: [],
       yieldOnTotal: null, yieldOnRisk: null, targets: [], allTime: 0, recordCount: 0,
-      sustained: { matched: 0, unmatched: 0, unmatchedNames: [], checkable: false },
+      sustained: {
+        matched: 0, unmatched: 0, soldConfirmed: 0, heldConfirmed: 0,
+        unknown: 0, expectedForward: 0, unmatchedNames: [], checkable: false,
+      },
       notes: ["配当・分配金の記録がありません。SBI の配当金明細を CSV 取り込みすると集計できます。"],
     };
   }
@@ -200,26 +221,43 @@ export function analyzeIncome(
 
   // 直近12ヶ月の配当のうち、いまの保有で裏付けが取れる分
   const holdingRefs = opts.holdings ?? [];
-  const sustained: SustainedIncome = { matched: 0, unmatched: 0, unmatchedNames: [], checkable: holdingRefs.length > 0 };
+  const statusByName = opts.statusByName ?? {};
+  const sustained: SustainedIncome = {
+    matched: 0, unmatched: 0, soldConfirmed: 0, heldConfirmed: 0,
+    unknown: 0, expectedForward: 0, unmatchedNames: [], checkable: holdingRefs.length > 0,
+  };
   if (sustained.checkable) {
     const unmatchedMap = new Map<string, { ticker: string; amount: number }>();
     for (const r of last12Rows) {
       if (matchesHolding({ name: r.name, ticker: r.ticker }, holdingRefs)) {
         sustained.matched += r.amount;
-      } else {
-        sustained.unmatched += r.amount;
-        const key = r.name || r.ticker || "(名称不明)";
-        const cur = unmatchedMap.get(key) ?? { ticker: r.ticker, amount: 0 };
-        unmatchedMap.set(key, { ticker: cur.ticker || r.ticker, amount: cur.amount + r.amount });
+        continue;
       }
+      sustained.unmatched += r.amount;
+      const key = r.name || r.ticker || "(名称不明)";
+      const cur = unmatchedMap.get(key) ?? { ticker: r.ticker, amount: 0 };
+      unmatchedMap.set(key, { ticker: cur.ticker || r.ticker, amount: cur.amount + r.amount });
     }
+
     sustained.unmatchedNames = [...unmatchedMap.entries()]
-      .map(([name, v]) => ({ name, ticker: v.ticker, amount: v.amount }))
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 8);
-    if (sustained.unmatched > 0) {
+      .map(([name, v]) => ({ name, ticker: v.ticker, amount: v.amount, status: statusByName[name] }))
+      .sort((a, b) => b.amount - a.amount);
+
+    for (const u of sustained.unmatchedNames) {
+      if (u.status === "sold") sustained.soldConfirmed += u.amount;
+      else if (u.status === "held") sustained.heldConfirmed += u.amount;
+      else sustained.unknown += u.amount;
+    }
+    sustained.expectedForward = sustained.matched + sustained.heldConfirmed;
+
+    if (sustained.unknown > 0) {
       notes.push(
-        "裏付けが取れないのは、売却した場合と、保有データにその銘柄が取り込まれていない場合の両方があります。内訳が未取得の口座に入っている可能性もあるため、売却済みと決めつけないでください。"
+        "裏付けが取れないのは、売却した場合と、保有データにその銘柄が取り込まれていない場合の両方があります。銘柄ごとに印を付けると、来年見込める額が確定します。"
+      );
+    }
+    if (sustained.soldConfirmed > 0) {
+      notes.push(
+        `売却済みと印を付けた ${Math.round(sustained.soldConfirmed).toLocaleString("ja-JP")}円 は、来年は入りません。この分を除いた見込みで判断してください。`
       );
     }
   }
@@ -282,9 +320,15 @@ export function incomeToBriefing(inc: IncomeAnalysis): string {
     lines.push(`- 口座別: ${inc.byAccount.map((a) => `${a.account} ${YEN(a.amount)}${a.taxFree ? "(非課税)" : ""}`).join(" / ")}`);
   }
   if (inc.sustained.checkable) {
-    lines.push(`- 直近12ヶ月のうち、いまの保有で裏付けが取れるのは ${YEN(inc.sustained.matched)}、取れないのは ${YEN(inc.sustained.unmatched)}`);
-    if (inc.sustained.unmatchedNames.length > 0) {
-      lines.push(`  - 裏付けが取れない銘柄: ${inc.sustained.unmatchedNames.slice(0, 5).map((u) => `${u.name} ${YEN(u.amount)}`).join(" / ")}`);
+    const s = inc.sustained;
+    lines.push(`- 直近12ヶ月のうち、いまの保有で裏付けが取れるのは ${YEN(s.matched)}`);
+    if (s.heldConfirmed > 0) lines.push(`- 本人が「まだ持っている」と確認したのは ${YEN(s.heldConfirmed)}`);
+    if (s.soldConfirmed > 0) lines.push(`- 本人が「売却済み」と確認したのは ${YEN(s.soldConfirmed)}。この分は来年入らない`);
+    if (s.unknown > 0) lines.push(`- まだ確認していないのは ${YEN(s.unknown)}`);
+    lines.push(`- **来年も入ると見込めるのは ${YEN(s.expectedForward)}（月あたり ${YEN(s.expectedForward / 12)}）**${s.unknown > 0 ? "。未確認分を除いた下限" : ""}`);
+    const unconfirmed = s.unmatchedNames.filter((u) => !u.status).slice(0, 5);
+    if (unconfirmed.length > 0) {
+      lines.push(`  - 未確認の銘柄: ${unconfirmed.map((u) => `${u.name} ${YEN(u.amount)}`).join(" / ")}`);
     }
   }
   lines.push(`- 記録全期間の累計: ${YEN(inc.allTime)}（${inc.recordCount}件）`);
