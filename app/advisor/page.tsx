@@ -575,6 +575,15 @@ export default function AdvisorPage() {
   const [morningBrief, setMorningBrief] = useState<MorningBriefData | null>(null);
   const [morningLoading, setMorningLoading] = useState(false);
   const [morningRawText, setMorningRawText] = useState("");
+  // 毎朝の cron が生成して保存したもの。開いた時点で出す（クリックを待たない）
+  const [autoBrief, setAutoBrief] = useState<{
+    generatedAt: string;
+    source: string;
+    missing: string[];
+    stale: boolean;
+    ageHours: number | null;
+  } | null>(null);
+  const [autoBriefLoading, setAutoBriefLoading] = useState(true);
 
   // Margin strategy state
   const [marginStrategy, setMarginStrategy] = useState<MarginStrategy | null>(null);
@@ -889,10 +898,42 @@ export default function AdvisorPage() {
     setNewsLoading(false);
   };
 
+  // 保存済みのブリーフを開いた時点で読み込む。LLM は呼ばないので速い。
+  // cron が動いていれば、ここで今朝の分析がそのまま出る。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/daily-brief");
+        const j = await res.json();
+        if (cancelled) return;
+        if (j?.stored) {
+          if (j.stored.brief) setMorningBrief(j.stored.brief as MorningBriefData);
+          else if (j.stored.rawText) setMorningRawText(j.stored.rawText);
+          setAutoBrief({
+            generatedAt: j.stored.generatedAt,
+            source: j.stored.source,
+            missing: j.stored.missing ?? [],
+            stale: !!j.stale,
+            ageHours: j.ageHours ?? null,
+          });
+        }
+      } catch {
+        /* 保存が無ければボタンで生成すればよい */
+      } finally {
+        if (!cancelled) setAutoBriefLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const generateMorningBrief = async () => {
     setMorningLoading(true);
     setMorningBrief(null);
     setMorningRawText("");
+    setAutoBrief(null); // 手動生成に切り替わったので「自動生成」の表示は外す
 
     try {
       const [indicesRes, fredRes, newsRes] = await Promise.all([
@@ -922,7 +963,9 @@ export default function AdvisorPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          indices: Object.values(indicesRes),
+          // { data: { "^N225": {...} } } 形式なので data の中身を並べる。
+          // 外側に Object.values をかけると2要素の配列になってしまう
+          indices: Object.values(indicesRes?.data ?? indicesRes ?? {}),
           fredData: fredRes.data,
           news: newsRes.news,
           holdings,
@@ -1179,7 +1222,7 @@ export default function AdvisorPage() {
       {/* ===== MORNING BRIEF TAB ===== */}
       {activeTab === "morning" && (
         <div>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex justify-between items-center mb-3">
             <p className="text-sm text-zinc-500 max-w-md">
               夜間の動き・セクター動向・今日のカタリストを機関投資家レベルで一覧
             </p>
@@ -1188,9 +1231,54 @@ export default function AdvisorPage() {
               disabled={morningLoading}
               className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-bold"
             >
-              {morningLoading ? "生成中..." : "ブリーフ生成"}
+              {morningLoading ? "生成中..." : autoBrief ? "今すぐ作り直す" : "ブリーフ生成"}
             </button>
           </div>
+
+          {/* 自動生成の状態。毎朝 JST 7:00 に cron が作る */}
+          {autoBriefLoading && !morningBrief && (
+            <div className="text-xs text-zinc-600 mb-6">保存済みのブリーフを確認しています…</div>
+          )}
+          {autoBrief && (
+            <div
+              className={clsx(
+                "text-xs rounded-lg px-3 py-2 mb-6 border",
+                autoBrief.stale
+                  ? "bg-amber-950/40 border-amber-900/60 text-amber-300"
+                  : "bg-zinc-900/60 border-zinc-800 text-zinc-400"
+              )}
+            >
+              {autoBrief.stale ? (
+                <>
+                  <span className="font-medium">
+                    このブリーフは{autoBrief.ageHours != null ? `${Math.floor(autoBrief.ageHours)}時間前` : "24時間以上前"}
+                    のものです。
+                  </span>{" "}
+                  毎朝の自動生成が止まっている可能性があります。作り直すか、cron の状態を確認してください。
+                </>
+              ) : (
+                <>
+                  <span className="text-zinc-300">
+                    {autoBrief.source === "cron" ? "毎朝7時の自動生成" : "手動生成"}
+                  </span>{" "}
+                  · {new Date(autoBrief.generatedAt).toLocaleString("ja-JP")}
+                  {autoBrief.ageHours != null && `（${Math.floor(autoBrief.ageHours)}時間前）`}
+                </>
+              )}
+              {autoBrief.missing.length > 0 && (
+                <span className="block mt-1 text-amber-400">
+                  取れなかった材料: {autoBrief.missing.join(" / ")}
+                </span>
+              )}
+            </div>
+          )}
+
+          {!autoBriefLoading && !autoBrief && !morningBrief && !morningLoading && !morningRawText && (
+            <div className="text-xs text-zinc-500 mb-6 border border-zinc-800 rounded-lg px-3 py-2">
+              自動生成された分析がまだありません。毎朝 7:00 に作られます（本番環境のみ）。
+              今すぐ見たい場合は右上のボタンを押してください。
+            </div>
+          )}
 
           {morningLoading && (
             <div className="flex flex-col items-center justify-center py-16">
