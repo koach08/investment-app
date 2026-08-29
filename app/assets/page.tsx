@@ -3,6 +3,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { clsx } from "clsx";
 import AssetAdvisor from "@/components/AssetAdvisor";
+import TrendSignalCard from "@/components/TrendSignalCard";
+import BenchmarkCard from "@/components/BenchmarkCard";
 import { normalizeHoldings, toJpy } from "@/lib/fx";
 
 interface Holding {
@@ -94,7 +96,7 @@ const DIVIDENDS_KEY = "investment-app-dividends";
 const SUMMARY_KEY = "investment-app-summary";
 const TIMELINE_KEY = "investment-app-timeline";
 
-type TabKey = "advisor" | "overview" | "sync" | "upload" | "paste" | "dividends" | "timeline" | "manual";
+type TabKey = "advisor" | "signal" | "overview" | "sync" | "upload" | "paste" | "dividends" | "timeline" | "manual";
 
 export default function AssetsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("advisor");
@@ -834,6 +836,7 @@ export default function AssetsPage() {
       <div className="flex gap-1 mb-6 overflow-x-auto">
         {[
           { key: "advisor", label: "診断・相談" },
+          { key: "signal", label: "月次シグナル" },
           { key: "overview", label: "資産全体" },
           { key: "sync", label: "自動連携" },
           { key: "upload", label: "CSV取り込み" },
@@ -867,6 +870,9 @@ export default function AssetsPage() {
           usdJpy={metalsData?.usdjpy ?? null}
         />
       )}
+
+      {/* ===== 月次シグナル ===== */}
+      {activeTab === "signal" && <TrendSignalCard />}
 
       {/* ===== OVERVIEW ===== */}
       {activeTab === "overview" && (
@@ -1051,6 +1057,9 @@ export default function AssetsPage() {
               </div>
             </div>
           </div>
+
+          {/* 比較対象を持たせる。累積リターンだけ見ても良し悪しは決まらない */}
+          {summary.length > 0 && <BenchmarkCard summary={summary} />}
 
           {/* Summary by account */}
           {summary.length > 1 && (
