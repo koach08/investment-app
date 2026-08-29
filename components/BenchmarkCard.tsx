@@ -3,7 +3,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { clsx } from "clsx";
 import { Scale, RefreshCw, Info, AlertTriangle } from "lucide-react";
-import { compareTo, type Comparison } from "@/lib/benchmark";
+import {
+  compareTo,
+  inferStartMonth,
+  type Comparison,
+  type TimelinePointLike,
+} from "@/lib/benchmark";
 
 interface PeriodReturn {
   from: string;
@@ -56,8 +61,16 @@ const VERDICT_STYLE = {
 
 const VERDICT_LABEL = { win: "勝ち", lose: "負け", tie: "引き分け" } as const;
 
-export default function BenchmarkCard({ summary }: { summary: SummaryLike[] }) {
+export default function BenchmarkCard({
+  summary,
+  timeline = [],
+}: {
+  summary: SummaryLike[];
+  /** 資産推移。開始月の初期値をここから推定する */
+  timeline?: TimelinePointLike[];
+}) {
   const [startMonth, setStartMonth] = useState("");
+  const [inferred, setInferred] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,15 +84,29 @@ export default function BenchmarkCard({ summary }: { summary: SummaryLike[] }) {
         const res = await fetch(`/api/save-data?key=${STORAGE_KEY}`);
         if (res.ok) {
           const j = await res.json();
-          if (typeof j?.data === "string") setStartMonth(j.data);
+          if (typeof j?.data === "string" && j.data) {
+            setStartMonth(j.data);
+            return;
+          }
         }
       } catch {
-        /* 未保存なら空のまま */
+        /* 未保存なら下の推定に落ちる */
       } finally {
         setLoaded(true);
       }
     })();
   }, []);
+
+  // 保存が無ければ、資産推移でリスク資産が最初に立った月を初期値にする。
+  // 手で入れさせるより、持っているデータから決めた方が正確で早い。
+  useEffect(() => {
+    if (!loaded || startMonth || timeline.length === 0) return;
+    const guess = inferStartMonth(timeline);
+    if (guess) {
+      setInferred(guess);
+      setStartMonth(guess);
+    }
+  }, [loaded, startMonth, timeline]);
 
   const persist = useCallback(async (v: string) => {
     setStartMonth(v);
@@ -154,6 +181,11 @@ export default function BenchmarkCard({ summary }: { summary: SummaryLike[] }) {
         {data && (
           <span className="text-zinc-500">
             {data.from}〜{data.to}（{data.months}ヶ月）
+          </span>
+        )}
+        {inferred && startMonth === inferred && (
+          <span className="text-xs text-zinc-500">
+            資産推移で株式・投信が最初に立った月から推定。違っていれば直してください
           </span>
         )}
       </div>

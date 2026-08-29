@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  monthsBetween, lumpSumReturn, dcaReturn, compareTo, isTooShort,
+  monthsBetween, lumpSumReturn, dcaReturn, compareTo, isTooShort, toYearMonth, inferStartMonth,
 } from "@/lib/benchmark";
 import type { MonthlyBar } from "@/lib/trend-signal";
 
@@ -96,4 +96,51 @@ test("12ヶ月未満は結論にしない印を付ける", () => {
   assert.equal(isTooShort(11), true);
   assert.equal(isTooShort(12), false);
   assert.equal(isTooShort(69), false);
+});
+
+/* --- 投資を始めた月の推定 --- */
+
+test("日付の区切りがスラッシュでもハイフンでも読む", () => {
+  assert.equal(toYearMonth("2020/03/31"), "2020-03");
+  assert.equal(toYearMonth("2026-03-12"), "2026-03");
+  assert.equal(toYearMonth("2020/3/1"), "2020-03");
+  assert.equal(toYearMonth("こわれた"), null);
+  assert.equal(toYearMonth("2020/13/01"), null, "13月は読まない");
+});
+
+test("リスク資産が最初に立った月を投資開始とみなす", () => {
+  const tl = [
+    { date: "2020/01/31", stocks: 0, funds: 0 },
+    { date: "2020/02/29", stocks: 0, funds: 0 },
+    { date: "2020/03/31", stocks: 0, funds: 308830 },
+    { date: "2020/04/30", stocks: 100, funds: 400000 },
+  ];
+  assert.equal(inferStartMonth(tl), "2020-03");
+});
+
+test("株式だけでも投信だけでも開始とみなす", () => {
+  assert.equal(inferStartMonth([{ date: "2021/05/31", stocks: 50000 }]), "2021-05");
+  assert.equal(inferStartMonth([{ date: "2021/05/31", funds: 50000 }]), "2021-05");
+});
+
+test("順序が入れ替わっていても一番早い月を返す", () => {
+  const tl = [
+    { date: "2022/06/30", funds: 100 },
+    { date: "2020/03/31", funds: 100 },
+    { date: "2021/01/31", funds: 100 },
+  ];
+  assert.equal(inferStartMonth(tl), "2020-03");
+});
+
+test("リスク資産が一度も無ければ null", () => {
+  assert.equal(inferStartMonth([{ date: "2020/01/31", stocks: 0, funds: 0 }]), null);
+  assert.equal(inferStartMonth([]), null);
+});
+
+test("読めない日付は飛ばす", () => {
+  const tl = [
+    { date: "こわれた", funds: 999999 },
+    { date: "2021/07/31", funds: 100 },
+  ];
+  assert.equal(inferStartMonth(tl), "2021-07");
 });

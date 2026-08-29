@@ -129,3 +129,39 @@ export function compareTo(minePct: number, benchmarkPct: number, label: string):
 export function isTooShort(months: number): boolean {
   return months < 12;
 }
+
+/* ------------------------------------------------------------------ */
+/* 投資を始めた月の推定                                                */
+/* ------------------------------------------------------------------ */
+
+export interface TimelinePointLike {
+  /** "2020/03/31" と "2026-03-12" が混在する */
+  date: string;
+  stocks?: number;
+  funds?: number;
+}
+
+/** "2020/03/31" でも "2026-03-12" でも "YYYY-MM" にする。読めなければ null */
+export function toYearMonth(date: string): string | null {
+  const m = date.match(/^(\d{4})[/-](\d{1,2})/);
+  if (!m) return null;
+  const month = Number(m[2]);
+  if (!(month >= 1 && month <= 12)) return null;
+  return `${m[1]}-${String(month).padStart(2, "0")}`;
+}
+
+/**
+ * 資産推移から、リスク資産（株式＋投資信託）が最初に立った月を返す。
+ *
+ * 開始月を手で入れさせるより、持っているデータから決めた方が正確で早い。
+ * 本人が上書きできる初期値として使う。
+ */
+export function inferStartMonth(timeline: TimelinePointLike[]): string | null {
+  const points = timeline
+    .map((p) => ({ ym: toYearMonth(p.date), risk: (p.stocks ?? 0) + (p.funds ?? 0) }))
+    .filter((p): p is { ym: string; risk: number } => p.ym !== null)
+    .sort((a, b) => a.ym.localeCompare(b.ym));
+
+  const first = points.find((p) => p.risk > 0);
+  return first ? first.ym : null;
+}

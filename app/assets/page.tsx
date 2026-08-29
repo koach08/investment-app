@@ -1059,7 +1059,7 @@ export default function AssetsPage() {
           </div>
 
           {/* 比較対象を持たせる。累積リターンだけ見ても良し悪しは決まらない */}
-          {summary.length > 0 && <BenchmarkCard summary={summary} />}
+          {summary.length > 0 && <BenchmarkCard summary={summary} timeline={timelineWithToday} />}
 
           {/* Summary by account */}
           {summary.length > 1 && (
