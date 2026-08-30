@@ -67,3 +67,42 @@ test("任意の材料が欠けても生成は止めない", () => {
 test("必須の材料は指数とニュースの2つ", () => {
   assert.deepEqual([...REQUIRED_INPUTS], ["indices", "news"]);
 });
+
+import { signalsNeedingAction, type SignalSnapshot } from "@/lib/signal-check";
+import { TREND_TARGETS } from "@/lib/trend-targets";
+
+const sig = (o: Partial<SignalSnapshot> = {}): SignalSnapshot => ({
+  ticker: "VTI",
+  label: "VTI",
+  state: "invested",
+  asOf: "2026-08",
+  gapPct: 5,
+  monthsInState: 1,
+  changedThisMonth: false,
+  gapCount: 0,
+  ...o,
+});
+
+test("変化が無ければ発注は要らない", () => {
+  assert.deepEqual(signalsNeedingAction([sig(), sig({ ticker: "VOO" })]), []);
+});
+
+test("今月変わったものだけ拾う", () => {
+  const a = sig({ ticker: "VTI", changedThisMonth: true });
+  const b = sig({ ticker: "VOO" });
+  assert.deepEqual(signalsNeedingAction([a, b]).map((x) => x.ticker), ["VTI"]);
+});
+
+test("月が飛んでいる銘柄は、変化していても数字を信用せず外す", () => {
+  const a = sig({ changedThisMonth: true, gapCount: 3 });
+  assert.deepEqual(signalsNeedingAction([a]), []);
+});
+
+test("取得に失敗した銘柄も外す", () => {
+  const a = sig({ changedThisMonth: true, error: "Yahoo 500" });
+  assert.deepEqual(signalsNeedingAction([a]), []);
+});
+
+test("対象は3本。API と cron が同じ定義を見る", () => {
+  assert.deepEqual(TREND_TARGETS.map((t) => t.ticker), ["VTI", "VOO", "VT"]);
+});

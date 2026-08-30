@@ -582,6 +582,15 @@ export default function AdvisorPage() {
     missing: string[];
     stale: boolean;
     ageHours: number | null;
+    signals: {
+      ticker: string;
+      label: string;
+      state: "invested" | "cash" | null;
+      asOf: string | null;
+      changedThisMonth: boolean;
+      gapCount: number;
+      error?: string;
+    }[];
   } | null>(null);
   const [autoBriefLoading, setAutoBriefLoading] = useState(true);
 
@@ -916,6 +925,7 @@ export default function AdvisorPage() {
             missing: j.stored.missing ?? [],
             stale: !!j.stale,
             ageHours: j.ageHours ?? null,
+            signals: j.stored.signals ?? [],
           });
         }
       } catch {
@@ -1234,6 +1244,45 @@ export default function AdvisorPage() {
               {morningLoading ? "生成中..." : autoBrief ? "今すぐ作り直す" : "ブリーフ生成"}
             </button>
           </div>
+
+          {/* 月次シグナルが変わった月だけ出す。年に0〜3回しかないので見落としやすい */}
+          {autoBrief && autoBrief.signals.some((x) => x.changedThisMonth && x.gapCount === 0 && !x.error) && (
+            <div className="border border-amber-700/70 bg-amber-950/40 rounded-lg p-4 mb-4">
+              <div className="text-amber-300 font-bold mb-1">
+                月次シグナルが変わりました。発注が要ります
+              </div>
+              <div className="text-sm text-zinc-300 space-y-0.5">
+                {autoBrief.signals
+                  .filter((x) => x.changedThisMonth && x.gapCount === 0 && !x.error)
+                  .map((x) => (
+                    <div key={x.ticker}>
+                      <span className="font-mono">{x.ticker}</span>
+                      {" → "}
+                      <span className={x.state === "invested" ? "text-emerald-400" : "text-amber-400"}>
+                        {x.state === "invested" ? "保有に切り替え" : "現金に退避"}
+                      </span>
+                      <span className="text-zinc-500 text-xs ml-2">（{x.asOf} 月末の確定値で判定）</span>
+                    </div>
+                  ))}
+              </div>
+              <div className="text-xs text-zinc-500 mt-2">
+                発注は手動です。資産ページの「月次シグナル」タブに根拠が出ています。
+              </div>
+            </div>
+          )}
+
+          {/* シグナルに変化が無いときは静かに現状だけ */}
+          {autoBrief && autoBrief.signals.length > 0 &&
+            !autoBrief.signals.some((x) => x.changedThisMonth && x.gapCount === 0 && !x.error) && (
+              <div className="text-xs text-zinc-500 mb-4">
+                月次シグナル:{" "}
+                {autoBrief.signals
+                  .filter((x) => x.state)
+                  .map((x) => `${x.ticker} ${x.state === "invested" ? "保有" : "現金"}`)
+                  .join(" / ")}
+                {" "}（変化なし。発注は不要）
+              </div>
+            )}
 
           {/* 自動生成の状態。毎朝 JST 7:00 に cron が作る */}
           {autoBriefLoading && !morningBrief && (

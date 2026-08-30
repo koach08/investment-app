@@ -1,4 +1,5 @@
 /** 自動生成したモーニングブリーフの保存形式とキー。読み書き両方でここを使う */
+import type { SignalSnapshot } from "./signal-check";
 
 export const LATEST_KEY = "daily-brief-latest";
 
@@ -21,6 +22,8 @@ export interface StoredBrief {
   durationMs: number;
   holdingsCount: number;
   newsCount: number;
+  /** 月次トレンドシグナルの状態。年に0〜3回しか変わらないので見落としやすい */
+  signals?: SignalSnapshot[];
 }
 
 /** 生成からどれくらい経ったか（時間）。古いブリーフを新しい顔で出さないための判定に使う */

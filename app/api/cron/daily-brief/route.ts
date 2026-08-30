@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { gatherBriefInputs } from "@/lib/brief-inputs";
 import { generateMorningBrief } from "@/lib/morning-brief";
 import { kvSet } from "@/lib/kv";
+import { checkTrendSignals } from "@/lib/signal-check";
 import { LATEST_KEY, dayKey, type StoredBrief } from "@/lib/daily-brief";
 
 // LLM を1回叩くので少し長めに取る
@@ -45,7 +46,12 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { brief, rawText } = await generateMorningBrief(input, apiKey);
+    // ブリーフ生成と並行してシグナルも見る。LLM を使わないので追加コストはほぼゼロ。
+    // シグナルの取得に失敗してもブリーフは出す（主従を逆にしない）
+    const [{ brief, rawText }, signals] = await Promise.all([
+      generateMorningBrief(input, apiKey),
+      checkTrendSignals(startedAt).catch(() => []),
+    ]);
 
     const stored: StoredBrief = {
       brief: brief ?? null,
@@ -56,6 +62,7 @@ export async function GET(request: NextRequest) {
       durationMs: Date.now() - startedAt,
       holdingsCount: input.holdings?.length ?? 0,
       newsCount: input.news?.length ?? 0,
+      signals,
     };
 
     // 日付キーと最新キーの両方に置く。日付キーは後から振り返れるように
@@ -65,6 +72,7 @@ export async function GET(request: NextRequest) {
       ok: true,
       generatedAt: stored.generatedAt,
       parsed: brief !== null,
+      signalsChanged: signals.filter((x) => x.changedThisMonth).map((x) => x.ticker),
       missing,
       durationMs: stored.durationMs,
     });
