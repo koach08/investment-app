@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parseMFTimelineCsv, looksLikeMFTimeline } from "@/lib/mf-timeline";
 import { TextDecoder as NodeTextDecoder } from "util";
 
 interface ParsedHolding {
@@ -72,13 +73,19 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Auto-detect MoneyForward asset timeline
-    if (source === "moneyforward" && (fullText.includes("合計（円）") || fullText.includes("預金・現金"))) {
-      const timeline = parseMFTimeline(lines);
+    // マネーフォワードの資産推移。列名で読む。
+    // 位置で読むと、実際の書き出しには信用の列が無いせいで投資信託が信用に、
+    // 債券が投資信託に、FX がポイントに入る (どれも金額がそれらしいので画面では気づけない)。
+    if (looksLikeMFTimeline(lines[0]) || (source === "moneyforward" && fullText.includes("合計"))) {
+      const parsed = parseMFTimelineCsv(lines);
       return NextResponse.json({
         type: "timeline",
-        timeline,
-        count: timeline.length,
+        timeline: parsed.timeline,
+        count: parsed.timeline.length,
+        // どの列をどこに入れたかを返す。取り込み前に画面で確かめられるように
+        mapping: parsed.mapping,
+        pooledIntoOther: parsed.pooledIntoOther,
+        skipped: parsed.skipped,
         source,
       });
     }
@@ -419,45 +426,6 @@ function parseSBISummary(lines: string[]): SummaryRecord[] {
   }
 
   return summaries;
-}
-
-// ===== マネーフォワード資産推移CSVパーサー =====
-interface TimelineRecord {
-  date: string;
-  total: number;
-  cash: number;
-  stocks: number;
-  margin: number;
-  funds: number;
-  points: number;
-  other: number;
-}
-
-function parseMFTimeline(lines: string[]): TimelineRecord[] {
-  const timeline: TimelineRecord[] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i]);
-    if (values.length < 7) continue;
-
-    const dateStr = values[0];
-    if (!dateStr.match(/^\d{4}\/\d{2}\/\d{2}$/)) continue;
-
-    timeline.push({
-      date: dateStr,
-      total: parseNum(values[1]),
-      cash: parseNum(values[2]),
-      stocks: parseNum(values[3]),
-      margin: parseNum(values[4]),
-      funds: parseNum(values[5]),
-      points: parseNum(values[6]),
-      other: values[7] ? parseNum(values[7]) : 0,
-    });
-  }
-
-  // Sort by date ascending
-  timeline.sort((a, b) => a.date.localeCompare(b.date));
-  return timeline;
 }
 
 // ===== Utilities =====
